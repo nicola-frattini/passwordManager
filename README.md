@@ -6,13 +6,13 @@ This application allows you to securely store, manage, and generate passwords, w
 # Features
 
 Secure Vault: Encrypts and stores your passwords securely using the cryptography library.                                                                                                                          
-Password Generation: Generate strong, random passwords with customizable length and special characters.                                       
-Encrypted Logging: Logs are encrypted to ensure sensitive information is protected.                                      
-Clipboard Management: Copy passwords to the clipboard with automatic clearing after 30 seconds.                                      
-Auto-Login: Simulates typing credentials into websites for quick login.                                      
-HIBP Integration: Checks if your passwords have been compromised in known data breaches.                                      
-Session Timeout: Automatically logs out after a period of inactivity.                                      
-Backup and Export: Backup and export your vault and logs securely.                                      
+Password Generation:   Generate strong, random passwords with customizable length and special characters.                                       
+Encrypted Logging:   Logs are encrypted to ensure sensitive information is protected.                                      
+Clipboard Management:   Copy passwords to the clipboard with automatic clearing after 30 seconds.                                      
+Auto-Login:   Simulates typing credentials into websites for quick login.                                      
+HIBP Integration:   Checks if your passwords have been compromised in known data breaches.                                      
+Session Timeout:   Automatically logs out after a period of inactivity.                                      
+Backup and Export:   Backup and export your vault and logs securely.                                      
 
 # Requirements
 The application requires the following Python libraries:                                      
