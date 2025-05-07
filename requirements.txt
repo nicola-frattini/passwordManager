@@ -1,0 +1,5 @@
+cryptography==41.0.3      # For encryption, decryption, and key derivation
+requests==2.31.0          # For HIBP API calls
+pyperclip==1.8.2          # For clipboard operations
+pyautogui==0.9.53         # For simulating keyboard and mouse actions
+keyring==24.2.0           # For securely storing and retrieving keys

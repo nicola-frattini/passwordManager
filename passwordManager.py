@@ -1,7 +1,4 @@
-#COSE DA FARE
-
-
-
+from config import *
 import os
 import json
 import base64
@@ -30,36 +27,43 @@ from logging.handlers import RotatingFileHandler
 import webbrowser
 import pyautogui
 import threading
-import subprocess
-import sys
 import hashlib
 import logging
 import socket
 import keyring
 
-# Configure logging
-LOG_FILE = "password_manager.log"
+
+#-------------------------------------------------
+
+
+# Variables for session timeout
+last_action = time.time()
+
+
+#--------------------------------------------------
+
+
+# Basic configuration for logging
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-
-
-
-
 #----------------------------------
 
-# Get a valid input from the user
+# Use to get a valid input from the user
 def get_valid_input(prompt: str, valid_options: list = None, allow_empty: bool = False) -> str:
-    
+# Prompt str - The message to display to the user
+# Valid_options list - A list of valid options for the user to choose from (optional)
+# allow_empty bool - Whether to allow empty input (default: False)
+# Returns the user's input as a string
     
     while True:
-        user_input = input(prompt).strip()
-        if allow_empty and user_input == "":
-            return user_input
-        if valid_options and user_input not in valid_options:
+        user_input = input(prompt).strip() # Get user input and remove leading/trailing spaces
+        if allow_empty and user_input == "": # Allow empty input if specified
+            return user_input 
+        if valid_options and user_input not in valid_options:  # Check if the input is in the list of valid options
             print(f"Invalid input. Please choose from: {', '.join(valid_options)}")
             continue
         return user_input
@@ -68,85 +72,82 @@ def get_valid_input(prompt: str, valid_options: list = None, allow_empty: bool =
 #----------------------------------
 
 
-SECURE_FOLDER = "secure_vault"
-VAULT_FILE = os.path.join(SECURE_FOLDER, "vault.enc")
-SALT_FILE = os.path.join(SECURE_FOLDER, "salt.bin")
-LOG_BACKUP_FOLDER = "log_backups"
-
-
-SERVICE_NAME = "PasswordManager"  # Name of the service for keyring
-
 # Create a secure folder for storing the vault and salt files, encrypt it, and make it hidden
 def create_secure_folder():
 
-    if not os.path.exists(SECURE_FOLDER):
+    if not os.path.exists(SECURE_FOLDER): # Check if the secure folder already exists
         os.makedirs(SECURE_FOLDER)
 
-        # Restrict folder permissions to the owner (read, write, execute)
-        os.chmod(SECURE_FOLDER, stat.S_IRWXU)
+        os.chmod(SECURE_FOLDER, stat.S_IRWXU) # Restrict folder permissions to the owner (read, write, execute)
 
         # Make the folder hidden (Windows only) 
         try:
-            FILE_ATTRIBUTE_HIDDEN = 0x02
-            result = ctypes.windll.kernel32.SetFileAttributesW(SECURE_FOLDER, FILE_ATTRIBUTE_HIDDEN)
+            FILE_ATTRIBUTE_HIDDEN = 0x02 # Windows attribute for hidden files/folders
+            result = ctypes.windll.kernel32.SetFileAttributesW(SECURE_FOLDER, FILE_ATTRIBUTE_HIDDEN) # Set the folder attribute to hidden
             if result == 0:  # If the result is 0, the operation failed
                 raise ctypes.WinError()
-            print(f"Secure folder is now hidden: {SECURE_FOLDER}")
+            logging.INFO(f"Secure folder is now hidden: {SECURE_FOLDER}")
         except Exception as e:
             print(f"Hiding folder failed: {e}")
+            logging.INFO(f"Failed to hide folder: {e}")
 
 
+#------------------------------------------------------------
+
+# Create a backup folder for the log files
 def create_backup_folder():
-    """Ensure the log backup folder exists."""
-    if not os.path.exists(LOG_BACKUP_FOLDER):
+
+    if not os.path.exists(LOG_BACKUP_FOLDER):# Check if the backup folder already exists
         os.makedirs(LOG_BACKUP_FOLDER)
 
 
-#-----------------------------------
+#------------------------------------------------
 
 
-# Configure logging with rotation
-LOG_FILE = "password_manager.log"
-LOG_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
-
+# Setup logging with a rotating file handler and an encrypted log handler
 def setup_logging(fernet: Fernet):
-    logger = logging.getLogger()
+# fernet - The Fernet object used for encryption/decryption
+
+    logger = logging.getLogger()# Get the root logger
     logger.handlers.clear()  # Clear existing handlers
 
-    rotating_handler = RotatingFileHandler(
+    rotating_handler = RotatingFileHandler( # 
         LOG_FILE, maxBytes=LOG_MAX_SIZE
     )
 
-    rotating_handler.setLevel(logging.INFO)
-    rotating_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    rotating_handler.setLevel(logging.INFO) # Set the log level for the rotating handler
+    rotating_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")) # Set the log format
 
     # Encrypted log handler
-    encrypted_handler = EncryptedLogHandler(fernet)
-    encrypted_handler.setLevel(logging.INFO)
+    encrypted_handler = EncryptedLogHandler(fernet) # Create an instance of the custom encrypted log handler
+    encrypted_handler.setLevel(logging.INFO) # Set the log level for the encrypted handler
 
     # Add handlers to the logger
     logger.addHandler(rotating_handler) # Rotating log file
     logger.addHandler(encrypted_handler)  # Encrypted logs
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.INFO) # Set the log level for the logger
 
 
+#-----------------------------------------------------------------------
 
 
+# Create a custom log handler to encrypt log messages
 class EncryptedLogHandler(logging.Handler):
-    def __init__(self, fernet):
-        super().__init__()
-        self.fernet = fernet
-        self.formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+# logging.Handler - Base class for all log handlers
 
+    # Initialize the custom log handler
+    def __init__(self, fernet): # fernet - The Fernet object used for encryption/decryption
+        super().__init__() # Initialize the base class
+        self.fernet = fernet # Store the Fernet object for encryption
+        self.formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s") # Set the log format
+
+    # Override the emit method to handle log messages
     def emit(self, record):
         try:
+            
+            msg = self.format(record) # Format the log message using the formatter
 
-            # Create a formatter for the log message
-
-            msg = self.format(record)
-
-            # Encrypt the log message
-            encrypted = self.fernet.encrypt(msg.encode())
+            encrypted = self.fernet.encrypt(msg.encode()) # Encrypt the log message using Fernet
 
             # Write the encrypted log message to the log file
             with open(LOG_FILE, "ab") as f:
@@ -156,41 +157,48 @@ class EncryptedLogHandler(logging.Handler):
             logging.error(f"Error in EncryptedLogHandler: {e}")
 
 
-            
+#-------------------------------------------------------------------------
 
 
+# Decrypt and display logs from the log file
 def decrypt_logs(log_file: str, fernet: Fernet):
+# log_file - The path to the log file
+# fernet - The Fernet object used for decryption
+
     try:
         with open(log_file, "rb") as f:
             for line in f:
                 if not line.strip():  # Skip empty lines
                     continue
                 try:
-                    decrypted = fernet.decrypt(line.strip())
+                    decrypted = fernet.decrypt(line.strip()) # Decrypt the log entry
                     print(decrypted.decode()) # Print the decrypted log entry
+                    
+                    # Exception handling for specific cases
                 except InvalidToken:
                     print("Warning: Skipping an invalid or corrupted log entry.")
                 except Exception as e:
                     print(f"Error processing a log entry: {e}")
-                    
+    # Exception handling for specific cases
     except FileNotFoundError:
         print(f"Log file '{log_file}' not found.")
     except Exception as e:
         print(f"Error decrypting logs: {e}")
+
 
     input("\nPress Enter to return to the menu...")
 
 
 #----------------------------------------------------
 
+
 # Create a backup of the log file
 def backup_logs():
     try:
-        # Ensure the backup folder exists
-        create_backup_folder()
 
-        # Check if the log file exists
-        if not os.path.exists(LOG_FILE):
+        create_backup_folder() # Ensure the backup folder exists
+        
+        if not os.path.exists(LOG_FILE):# Check if the log file exists
             print("No log file found to back up.")
             return
 
@@ -203,6 +211,7 @@ def backup_logs():
             dst.write(src.read())
 
         logging.info(f"Log file backed up to {backup_file}")
+
     except Exception as e:
         print(f"Error backing up logs: {e}")
         logging.error(f"Error backing up logs: {e}")
@@ -237,13 +246,15 @@ def log_user_info():
 
 # Export keys to a file
 def export_keys(master_password: str, export_path: str):
+# master_password - The master password used for encryption
+# export_path - The path to the export file
 
     try:
         # Retrieve the encryption key and salt encryption key
         encryption_key = keyring.get_password(SERVICE_NAME, "encryption_key")
         salt_encryption_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
 
-        if not encryption_key or not salt_encryption_key:
+        if not encryption_key or not salt_encryption_key: # Check if keys are found in keyring
             print("Keys not found in keyring.")
             return
 
@@ -254,6 +265,7 @@ def export_keys(master_password: str, export_path: str):
 
         print(f"Keys exported successfully to {export_path}")
         logging.info(f"Keys exported to {export_path}")
+
     except Exception as e:
         print(f"Error exporting keys: {e}")
         logging.error(f"Error exporting keys: {e}")
@@ -262,31 +274,12 @@ def export_keys(master_password: str, export_path: str):
 #-------------------------------------------------
 
 
-def install_missing_packages():
-    """Check and install missing packages."""
-    required_packages = [
-        "cryptography",
-        "pyperclip",
-        "pyautogui",
-        "keyring"
-    ]
-
-    for package in required_packages:
-        try:
-            __import__(package)  # Try to import the package
-        except ImportError:
-            print(f"Package '{package}' is not installed. Installing...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-
-#-------------------------------------------------
-
-
 # Check if the password has been compromised using HIBP API
 def check_password_hibp(password: str) -> bool:
+# password - The password to check
 
-    sha1_hash = hashlib.sha1(password.encode()).hexdigest().upper()
-    prefix, suffix = sha1_hash[:5], sha1_hash[5:]
+    sha1_hash = hashlib.sha1(password.encode()).hexdigest().upper() # Hash the password using SHA1
+    prefix, suffix = sha1_hash[:5], sha1_hash[5:] #Split the hash into prefix and suffix
 
     # Query the HIBP API with the first 5 characters of the hash
     url = f"https://api.pwnedpasswords.com/range/{prefix}"
@@ -318,6 +311,7 @@ def check_password_hibp(password: str) -> bool:
 
 # Check if the password has been compromised using HIBP API for all passwords in the vault
 def check_vault_passwords(vault: list):
+# vault - The list of entries in the vault
 
     logging.info("Checking passwords in the vault...")
     if not vault:
@@ -328,6 +322,8 @@ def check_vault_passwords(vault: list):
     print("\nCHECK PASSWORDS\n")
 
     print("\nChecking passwords in the vault...\n")
+
+    # Loop through each entry in the vault and check the password
     for entry in vault:
         site = entry['site']
         password = entry['password']
@@ -341,23 +337,13 @@ def check_vault_passwords(vault: list):
     input("\nPress Enter to return to the menu...")
 
 
-#-------------------------------------------------
-
-
-# Variables for session timeout
-last_action = time.time()
-SESSION_TIMEOUT = 300 # 5 minuti (in secondi)
-
-#--------------------------------------------------
-
-
 # Check for session timeout
 def check_and_reset_timer():
   
-    global last_action
-    remaining_time = SESSION_TIMEOUT - (time.time() - last_action)
-    if remaining_time <= 30:  # Notify if less than 30 seconds remain
-        print(f"Warning: Your session will expire in {int(remaining_time)} seconds.")
+    global last_action  # Use the global variable to track the last action time
+    remaining_time = SESSION_TIMEOUT - (time.time() - last_action) # Calculate remaining time
+    
+    # Check if the session has expired
     if remaining_time <= 0:
         clear_screen()
         print("Session expired due to inactivity.")
@@ -367,31 +353,48 @@ def check_and_reset_timer():
 
 #--------------------------------------------------
 
+
 # Derive PEPPER from the machine's unique identifier
 def get_machine_pepper() -> str:
 
     machine_id = str(uuid.getnode()) + socket.gethostname()  # Combine hardware ID and hostname
     return sha256(machine_id.encode()).hexdigest()  # Hash the combined identifiers
 
+
+#-----------------------------------------------------------
+
+# Get the machine's unique identifier and derive PEPPER
 PEPPER = get_machine_pepper()
+
+
+#-----------------------------------------------------------
+
 
 # Derive a key from the master password and salt
 def derive_key(master_password: str, salt: bytes) -> bytes:
-    master_password += PEPPER
+# master_password - The master password used for key derivation
+    
+    master_password += PEPPER # Combine the master password with PEPPER
+    
+    # Derive a key using PBKDF2
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
         iterations=1_000_000,
     )
-    return base64.urlsafe_b64encode(kdf.derive(master_password.encode()))
+    return base64.urlsafe_b64encode(kdf.derive(master_password.encode())) # Return the derived key in URL-safe base64 format
 
 
 #--------------------------------------------------
 
+
 # Secure the vault file by restricting permissions
 def secure_file(file_path: str, grant_access=False):
-    # Grant access to the owner only
+# file_path - The path to the file to secure
+# grant_access - Whether to grant access to the file (default: False)
+
+    # Check if the file exists
     if os.path.exists(file_path):
         if grant_access:
             # Temporarily grant read/write permissions to the owner
@@ -405,23 +408,33 @@ def secure_file(file_path: str, grant_access=False):
 
 
 # Generate a random 
-def generate_password(length: int = 24,include_special_chars:bool = True) -> str:
+def generate_password(length: int = PASSWORD_LENGTH_DEFAULT,include_special_chars:bool = True) -> str:
+# length - The length of the password to generate (default: 16)
+# include_special_chars - Whether to include special characters (default: True)
+
 
     if length < 8:
         print(" Minimum password's length is 8 char.")
         return ""
+    
+    #Check for special characters
     mandatory_special_character = "@#!+=_-"
     characters = string.ascii_letters + string.digits
     if include_special_chars:
         characters += mandatory_special_character
 
-    password = ''.join(secrets.choice(characters) for _ in range(length))
+    # Generate a random password
+    password = ''.join(secrets.choice(characters) for _ in range(length)) # Generate a random password using the specified characters
     return password
+
 
 #-------------------------------------------------
 
+
+# Get the encryption key from the keyring or generate a new one
 def get_encryption_key(master_password: str) -> bytes:
-    """Retrieve or generate the encryption key using keyring and the master password."""
+## master_password - The master password used for key derivation
+    
     # Try to retrieve the key from keyring
     stored_key = keyring.get_password(SERVICE_NAME, "encryption_key")
     if stored_key:
@@ -440,8 +453,12 @@ def get_encryption_key(master_password: str) -> bytes:
 # ---------------------------------------------------
 
 
+# Get the salt encryption key from the keyring or generate a new one
 def get_salt_encryption_key(master_password: str, salt: bytes) -> bytes:
-    """Deriva una chiave specifica per cifrare salt.bin"""
+# master_password - The master password used for key derivation
+# salt - The salt used for key derivation
+
+    # Try to retrieve the key from keyring
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
@@ -450,67 +467,94 @@ def get_salt_encryption_key(master_password: str, salt: bytes) -> bytes:
     )
     return base64.urlsafe_b64encode(kdf.derive((master_password + "SALT_ENCRYPTION").encode()))
 
-def save_salt_key_to_keyring(master_password: str, salt: bytes):
-    """Salva la chiave di cifratura del salt nel keyring."""
-    salt_key = get_salt_encryption_key(master_password, salt)
-    keyring.set_password(SERVICE_NAME, "salt_encryption_key", salt_key.decode())
 
+#----------------------------------------------------------------------------
+
+
+# Save the salt encryption key to the keyring
+def save_salt_key_to_keyring(master_password: str, salt: bytes):
+# master_password - The master password used for key derivation
+# salt - The salt used for key derivation
+
+
+    salt_key = get_salt_encryption_key(master_password, salt) # Get the salt encryption key
+    keyring.set_password(SERVICE_NAME, "salt_encryption_key", salt_key.decode()) # Store the key in keyring
+
+
+#------------------------------------------------------------------------------
 
 
 # Ensure the secure folder exists before loading the encryption key
 create_secure_folder()
 
 
+#---------------------------------------------------------------------------------
 
+
+# Load the encryption key from the keyring or generate a new one
 def encrypt_salt_file(master_password: str):
-    """Cifra salt.bin con doppio layer: Fernet + chiave derivata da master password."""
+# master_password - The master password used for key derivation
+
+    # Check if the salt file exists, if not, create it
     if not os.path.exists(SALT_FILE):
         salt = os.urandom(16)
         with open(SALT_FILE, "wb") as f:
             f.write(salt)
     
-    # Layer 1: Leggi il salt grezzo
+    # Read the salt from the file
     with open(SALT_FILE, "rb") as f:
         plain_salt = f.read()
     
-    # Layer 2: Cifra con chiave derivata da master password
-    salt_key = get_salt_encryption_key(master_password, plain_salt)
-    fernet = Fernet(salt_key)
-    encrypted_salt = fernet.encrypt(plain_salt)
+    # Encrypt the salt using the master password
+    salt_key = get_salt_encryption_key(master_password, plain_salt) # Get the salt encryption key
+    fernet = Fernet(salt_key) # Create a Fernet object for encryption
+    encrypted_salt = fernet.encrypt(plain_salt) # Encrypt the salt
     
-    # Sovrascrivi il file con il salt cifrato
+    # Write the encrypted salt back to the file
     with open(SALT_FILE, "wb") as f:
         f.write(encrypted_salt)
     
-    # Salva la chiave nel keyring
+    # Save the salt encryption key to the keyring
     save_salt_key_to_keyring(master_password, plain_salt)
 
 
+#-----------------------------------------------------------------------------------------
+
+
+# Decrypt the salt file using the master password and the key from the keyring
 def decrypt_salt_file(master_password: str) -> bytes:
-    """Decifra salt.bin usando la chiave dal keyring."""
-    # Leggi il salt cifrato
+# master_password - The master password used for key derivation
+
+
+    # Check if the salt file exists
     with open(SALT_FILE, "rb") as f:
         encrypted_salt = f.read()
     
-    # Recupera la chiave dal keyring
+    # # Get the salt encryption key from the keyring
     salt_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
     if not salt_key:
         raise ValueError("Salt encryption key not found in keyring!")
     
-    # Decifra
+    # Decrypt the salt using the key from the keyring
     fernet = Fernet(salt_key.encode())
     return fernet.decrypt(encrypted_salt)
 
+
 #-------------------------------------------------
+
 
 # Hash the vault file using SHA256
 def compute_file_hash(file_path: str) -> str:
+# file_path - The path to the file to hash
 
+    # Check if the file exists
     if not os.path.exists(file_path):
-        return None  # Return None if the file doesn't exist
+        return None 
 
+    # Create a SHA256 hash object
     sha256_hash = hashlib.sha256()
     try:
+        # Open the file in binary mode
         with open(file_path, "rb") as f:
             # Read the file in chunks to handle large files
             for chunk in iter(lambda: f.read(4096), b""):
@@ -532,7 +576,7 @@ def init_vault():
         print("Vault already initialized.")
         return False  # Vault is already initialized
 
-
+    ## Create the secure folder if it doesn't exist
     master_pwd = getpass.getpass("Set a master password: ")
     confirm_pwd = getpass.getpass("Confirm the master password: ")
     if master_pwd != confirm_pwd:
@@ -553,17 +597,23 @@ def init_vault():
     fernet = Fernet(vault_key)
 
     
-    # Salva il vault vuoto
+    # Save the vault key to the keyring
     save_vault(fernet, [])
+
+
 #----------------------------------------------
+
 
 # Load the vault from the file
 def load_vault(fernet: Fernet) -> list:
+# fernet - The Fernet object used for decryption
 
+    # Check if the vault file exists
     if not os.path.exists(VAULT_FILE):
         return []
 
     try:
+        # Read the encrypted vault data from the file
         with open(VAULT_FILE, "rb") as f:
             data = f.read()
 
@@ -571,6 +621,7 @@ def load_vault(fernet: Fernet) -> list:
         decrypted = fernet.decrypt(data)
         return json.loads(decrypted)
 
+    ## Exception handling for specific cases
     except InvalidToken:
         print("Master password not found. Decryption failed.")
         exit(1)  # Exit if the master password is incorrect
@@ -588,13 +639,16 @@ def load_vault(fernet: Fernet) -> list:
         
 # Save the chyphered vault to the file
 def save_vault(fernet: Fernet, vault: list):
+# fernet - The Fernet object used for encryption
     
     secure_file(VAULT_FILE, grant_access=True)  # Temporarily grant permissions
     try:
+        # Encrypt the vault data
         data = json.dumps(vault).encode()
         encrypted = fernet.encrypt(data)
         with open(VAULT_FILE, "wb") as f:
             f.write(encrypted)
+
         secure_file(VAULT_FILE, grant_access=False)  # Revoke permissions
 
         # Compute and display the hash of the saved file
@@ -619,6 +673,8 @@ def save_vault(fernet: Fernet, vault: list):
 
 # Add a new item
 def add_entry(vault: list):
+# vault - The list of entries in the vault
+
     while True:  # Loop until valid input is provided
         clear_screen()
         show_title()
@@ -626,49 +682,53 @@ def add_entry(vault: list):
         check_and_reset_timer()  # Enforce timeout globally
 
         try:
+            # Get user input for site, username, URL, and password
             site = get_valid_input("Site (or leave blank to cancel): ", allow_empty=True)
             if not site:
                 print("cancelled...")
                 time.sleep(3)  # Add delay for cancellation
-                return  # Return to the menu
+                return 
 
             user = get_valid_input("Username (or leave blank to cancel): ", allow_empty=True)
             if not user:
                 print("cancelled...")
                 time.sleep(3)  # Add delay for cancellation
-                return  # Return to the menu
+                return  #
 
             url = get_valid_input("URL (or leave blank to cancel): ", allow_empty=True)
             if not url:
                 print("cancelled...")
                 time.sleep(3)  # Add delay for cancellation
-                return  # Return to the menu
+                return
 
-            print("\n[1] Set manually a password\n[2] Generate a secure password\n[0] Cancel")
+            # Ask for password input method
+            print("\n[1] Set manually a password\n[2] Generate a secure password\n\n[0] Cancel")
             choice = get_valid_input("> ", valid_options=["0", "1", "2"])
 
             if choice == "0":
                 print("cancelled...")
                 time.sleep(3)  # Add delay for cancellation
-                return  # Return to the menu
+                return
             elif choice == "1":
                 pwd = getpass.getpass("Password (or leave blank to cancel): ").strip()
                 if not pwd:
                     print("cancelled...")
                     time.sleep(3)  # Add delay for cancellation
-                    return  # Return to the menu
+                    return
             elif choice == "2":
                 length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
                 if not length:
                     print("cancelled...")
                     time.sleep(3)  # Add delay for cancellation
-                    return  # Return to the menu
+                    return 
+                
                 length = int(length) if length.isdigit() else 24
+                # Check if the user wants to include special characters
                 include_special_chars = get_valid_input("Include special characters? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
                 if not include_special_chars:
                     print("cancelled...")
                     time.sleep(3)  # Add delay for cancellation
-                    return  # Return to the menu
+                    return 
                 pwd = generate_password(length, include_special_chars == "y")
                 print(f"Password generated: {pwd}")
 
@@ -677,26 +737,34 @@ def add_entry(vault: list):
             print("Credentials entered correctly.")
             logging.info(f"Added new entry for site: {site}, url: {url}")
             break  # Exit the loop after successful entry
+
+        # Exception handling for specific cases
         except ValueError:
             print("Invalid input. Please try again.")
             logging.error("ValueError occurred while adding an entry.")
         except Exception as e:
             print(f"Unexpected error adding an entry: {e}")
             logging.error(f"Unexpected error: {e}")
+
         input("\nPress Enter to return to the menu...")
+
+
 #-------------------------------------------------
 
 
 # Delete an entry
 def delete_entry(vault: list):
-    while True:  # Loop until valid input is provided
-        check_and_reset_timer()
+# vault - The list of entries in the vault
 
-        show_entries(vault, copy_enabled=False, justView_enabled=False)
+    while True:  # Loop until valid input is provided
+        check_and_reset_timer() 
+        show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
         if not vault:
             return
 
         try:
+            
+            # Get the index of the entry to delete
             idx = get_valid_input("ID to delete (or leave blank to cancel): ", allow_empty=True)
             if not idx:
                 print("cancelled...")
@@ -704,6 +772,7 @@ def delete_entry(vault: list):
                 return  # Return to the menu
             idx = int(idx) - 1
             if 0 <= idx < len(vault):
+                # Confirm deletion
                 confirm = get_valid_input(f"Do you confirm the deletion of {vault[idx]['site']}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
                 if not confirm or confirm == "n":
                     print("cancelled...")
@@ -721,19 +790,24 @@ def delete_entry(vault: list):
                 print("Invalid index. Please try again.")
         except ValueError:
             print("Invalid input. Please enter a valid number.")
+
+
 #-------------------------------------------------
 
 
 # Edit an entry
 def edit_entry(vault: list):
+# vault - The list of entries in the vault
+
     while True:  # Loop until valid input is provided
         check_and_reset_timer()  # Enforce timeout globally
 
-        show_entries(vault, copy_enabled=False, justView_enabled=False)
+        show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
         if not vault:
             return
 
         try:
+            # Get the index of the entry to edit
             idx = get_valid_input("Enter the account index to edit (leave blank to cancel): ", allow_empty=True)
             if not idx:
                 print("cancelled...")
@@ -746,9 +820,11 @@ def edit_entry(vault: list):
                 original_entry = entry.copy()  # Keep a copy of the original entry for logging
                 print(f"Editing {entry['site']}")
 
+                # Get new values for username, URL, and password
                 new_user = get_valid_input(f"New username (leave blank to keep '{entry['username']}'): ", allow_empty=True)
                 new_url = get_valid_input(f"New URL (leave blank to keep '{entry['url']}'): ", allow_empty=True)
 
+                # Ask for password input method
                 print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password\n[0] Cancel")
                 choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
@@ -798,14 +874,19 @@ def edit_entry(vault: list):
         except ValueError:
             print("Invalid input. Please enter a valid number.")
 
+
 #-------------------------------------------------
 
 
 # Show all entries in the vault
 def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
-    check_and_reset_timer()
+# vault - The list of entries in the vault
+# copy_enabled - Whether to enable the copy option (default: True)
+# justView_enabled - Whether to enable the view option (default: True)
 
+    check_and_reset_timer()
     clear_screen()
+
     # Check if the vault is empty
     if not vault:
         print("\nThe vault is empty.")
@@ -824,14 +905,16 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
 
 
     print("\n")
+
     # Check if the user wants to copy a password
     if copy_enabled:
         try:
+            # Get the index of the entry to copy
             copy = input("\nDo you want to copy a password? Enter the index or press Enter to skip: ").strip()
             if copy:
                 idx = int(copy) - 1
                 if 0 <= idx < len(vault):
-                    pyperclip.copy(vault[idx]['password'])
+                    pyperclip.copy(vault[idx]['password']) # Copy the password to the clipboard
                     logging.info(f"Copied password for site: {vault[idx]['site']}") # Log the copied password
                     print("Password copied to clipboard, it will be ereased in 30 seconds for security.")
 
@@ -850,6 +933,7 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
     if justView_enabled:
         input("\nPress Enter to return to the menu...")
 
+
 #-------------------------------------------------
 
 
@@ -861,6 +945,7 @@ def export_vault():
             print("Vault file not found. Please ensure the vault is initialized.")
             return
 
+        # Ask the user for the export path
         export_path = input("Enter the path to export the vault (e.g., backup_vault.enc): ").strip()
         with open(VAULT_FILE, "rb") as src, open(export_path, "wb") as dst:
             dst.write(src.read())
@@ -873,11 +958,15 @@ def export_vault():
 
     input("\nPress Enter to return to the menu...")
 
+
 #--------------------------------------------------
 
 
 # Menu search logs to a file
 def search_logs_menu(log_file: str, fernet: Fernet):
+# log_file - The path to the log file
+# fernet - The Fernet object used for decryption
+
     while True:  # Loop until valid input is provided
         try:
             clear_screen()
@@ -948,8 +1037,16 @@ def search_logs_menu(log_file: str, fernet: Fernet):
         input("\nPress Enter to return to the menu...")
 
 
+#----------------------------------------------------------------------------
+
+
+# Decrypt and display logs from the log file
 def export_logs(log_file: str, fernet: Fernet):
+# log_file - The path to the log file
+# fernet - The Fernet object used for decryption
+
     try:
+        # Ask the user for the export path
         export_path = input("Enter the path to export the logs (e.g., logs_export.txt): ").strip()
         with open(log_file, "rb") as f, open(export_path, "w") as export_file:
             for line in f:
@@ -958,6 +1055,8 @@ def export_logs(log_file: str, fernet: Fernet):
                 try:
                     decrypted = fernet.decrypt(line.strip()).decode()
                     export_file.write(decrypted + "\n")
+
+                # Exception handling for specific cases
                 except InvalidToken:
                     export_file.write("Warning: Skipping an invalid or corrupted log entry.\n")
                 except Exception as e:
@@ -972,6 +1071,9 @@ def export_logs(log_file: str, fernet: Fernet):
 
 # Menu for log options
 def log_view_menu(log_file: str, fernet: Fernet):
+# log_file - The path to the log file
+# fernet - The Fernet object used for decryption
+
     while True:
         check_and_reset_timer()  # Enforce timeout globally
 
@@ -1003,7 +1105,12 @@ def log_view_menu(log_file: str, fernet: Fernet):
 #-------------------------------------------------
 
 
+# Menu for advanced options
 def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
+# vault - The list of entries in the vault
+# fernet - The Fernet object used for encryption
+# log_fernet - The Fernet object used for logging
+
     while True:
         check_and_reset_timer()  # Enforce timeout globally
 
@@ -1027,8 +1134,14 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
             break
 
 
+#--------------------------------------------------------------------
+
+
 # Manage entries in the vault
 def manage_entries(vault: list, fernet: Fernet):
+# vault - The list of entries in the vault
+# fernet - The Fernet object used for encryption
+
     while True:
         check_and_reset_timer()  # Enforce timeout globally
 
@@ -1073,6 +1186,7 @@ def clear_screen():
 #-------------------------------------------------
 
 
+# Show the title of the program
 def show_title():
     print("""\n
 ╔────────────────────────────────────────────────────────────────────────╗
@@ -1088,14 +1202,18 @@ def show_title():
 #-------------------------------------------------
 
 
+# Check if the session has timed out and reset the timer
 def auto_login(vault: list):
+# vault - The list of entries in the vault
+
     check_and_reset_timer()
 
-    show_entries(vault, copy_enabled=False, justView_enabled=False)
+    show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
     if not vault:
         return
 
     try:
+        # Get the index of the entry to auto-login
         idx = int(input("Enter the account index to auto-login (leave blank to cancel): ").strip()) - 1
         if 0 <= idx < len(vault):
             entry = vault[idx]
@@ -1121,11 +1239,10 @@ def auto_login(vault: list):
 #-------------------------------------------------
 
 
-#-------------------------------------------------
-
-
 # Main function
 def main():
+
+    # Initialize global variables
     global last_action
 
     # Ensure the secure folder exists
@@ -1190,6 +1307,5 @@ def main():
         backup_logs()  # Back up logs at the end of the session
         
 
-if __name__ == "__main__":
-    install_missing_packages() 
+if __name__ == "__main__": 
     main()
