@@ -29,7 +29,6 @@ from logging.handlers import RotatingFileHandler
 
 import webbrowser
 import pyautogui
-import win32crypt
 import threading
 import subprocess
 import sys
@@ -46,6 +45,25 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
+
+
+
+#----------------------------------
+
+# Get a valid input from the user
+def get_valid_input(prompt: str, valid_options: list = None, allow_empty: bool = False) -> str:
+    
+    
+    while True:
+        user_input = input(prompt).strip()
+        if allow_empty and user_input == "":
+            return user_input
+        if valid_options and user_input not in valid_options:
+            print(f"Invalid input. Please choose from: {', '.join(valid_options)}")
+            continue
+        return user_input
+    
 
 #----------------------------------
 
@@ -107,6 +125,7 @@ def setup_logging(fernet: Fernet):
     encrypted_handler.setLevel(logging.INFO)
 
     # Add handlers to the logger
+    logger.addHandler(rotating_handler) # Rotating log file
     logger.addHandler(encrypted_handler)  # Encrypted logs
     logger.setLevel(logging.INFO)
 
@@ -486,7 +505,7 @@ def decrypt_salt_file(master_password: str) -> bytes:
 
 # Hash the vault file using SHA256
 def compute_file_hash(file_path: str) -> str:
-    """Compute the SHA256 hash of a file."""
+
     if not os.path.exists(file_path):
         return None  # Return None if the file doesn't exist
 
@@ -540,7 +559,7 @@ def init_vault():
 
 # Load the vault from the file
 def load_vault(fernet: Fernet) -> list:
-    """Load the vault from the file."""
+
     if not os.path.exists(VAULT_FILE):
         return []
 
@@ -581,7 +600,7 @@ def save_vault(fernet: Fernet, vault: list):
         # Compute and display the hash of the saved file
         file_hash = compute_file_hash(VAULT_FILE)
         if file_hash:
-            print(f"Vault saved successfully. File hash: {file_hash}")
+            logging.INFO(f"Vault saved successfully. File hash: {file_hash}")
 
     # Exception handling
     except FileNotFoundError:
@@ -600,145 +619,184 @@ def save_vault(fernet: Fernet, vault: list):
 
 # Add a new item
 def add_entry(vault: list):
-    clear_screen()
-    show_title()
-    print("\nADD A NEW ACCOUNT\n")
-    check_and_reset_timer()  # Enforce timeout globally
+    while True:  # Loop until valid input is provided
+        clear_screen()
+        show_title()
+        print("\nADD A NEW ACCOUNT\n")
+        check_and_reset_timer()  # Enforce timeout globally
 
-    try:
-        site = input("Site: ").strip()
-        check_and_reset_timer()
-        user = input("Username: ").strip()
-        url = input("URL: ").strip()
-        if not site or not user or not url:
-            print("Site, Username, and URL can't be blank.")
-            logging.warning("Attempted to add an entry with blank fields.")
-            return
+        try:
+            site = get_valid_input("Site (or leave blank to cancel): ", allow_empty=True)
+            if not site:
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return  # Return to the menu
 
-        print("\n[1] Set manually a password\n[2] Generate a secure password")
-        choice = input("> ").strip()
-        check_and_reset_timer()
+            user = get_valid_input("Username (or leave blank to cancel): ", allow_empty=True)
+            if not user:
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return  # Return to the menu
 
-        if choice == "1":
-            pwd = getpass.getpass("Password: ").strip()
-        elif choice == "2":
-            length = input("Password length (default 24): ").strip()
-            length = int(length) if length.isdigit() else 24
-            include_special_chars = input("Include special characters? (y/n): ").strip().lower()
-            pwd = generate_password(length,include_special_chars=="y")
-            print(f"Password generated: {pwd}")
-        else:
-            print("Option not valid.")
-            logging.warning("Invalid option selected while adding an entry.")
-            return
+            url = get_valid_input("URL (or leave blank to cancel): ", allow_empty=True)
+            if not url:
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return  # Return to the menu
 
-        vault.append({"site": site, "username": user, "password": pwd, "url": url})
-        print("Credentials entered correctly.")
-        logging.info(f"Added new entry for site: {site}, url: {url}")
-    except ValueError:
-        print("Invalid input. Please try again.")
-        logging.error("ValueError occurred while adding an entry.")
-    except Exception as e:
-        print(f"Unexpected error adding an entry: {e}")
-        logging.error(f"Unexpected error: {e}")
-    finally:
+            print("\n[1] Set manually a password\n[2] Generate a secure password\n[0] Cancel")
+            choice = get_valid_input("> ", valid_options=["0", "1", "2"])
+
+            if choice == "0":
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return  # Return to the menu
+            elif choice == "1":
+                pwd = getpass.getpass("Password (or leave blank to cancel): ").strip()
+                if not pwd:
+                    print("cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+            elif choice == "2":
+                length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
+                if not length:
+                    print("cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+                length = int(length) if length.isdigit() else 24
+                include_special_chars = get_valid_input("Include special characters? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
+                if not include_special_chars:
+                    print("cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+                pwd = generate_password(length, include_special_chars == "y")
+                print(f"Password generated: {pwd}")
+
+            # Add the entry to the vault
+            vault.append({"site": site, "username": user, "password": pwd, "url": url})
+            print("Credentials entered correctly.")
+            logging.info(f"Added new entry for site: {site}, url: {url}")
+            break  # Exit the loop after successful entry
+        except ValueError:
+            print("Invalid input. Please try again.")
+            logging.error("ValueError occurred while adding an entry.")
+        except Exception as e:
+            print(f"Unexpected error adding an entry: {e}")
+            logging.error(f"Unexpected error: {e}")
         input("\nPress Enter to return to the menu...")
-
-
 #-------------------------------------------------
 
 
 # Delete an entry
 def delete_entry(vault: list):
-    check_and_reset_timer()
+    while True:  # Loop until valid input is provided
+        check_and_reset_timer()
 
-    show_entries(vault, copy_enabled=False, justView_enabled=False)
-    if not vault:
-        return
-    try:
-        # Ask for the index of the entry to delete
-        idx = int(input("ID to delete (leave blank to cancel): ").strip()) - 1
-        if 0 <= idx < len(vault):
-            check_and_reset_timer()
-            # Confirm deletion
-            confirm = input(f"Do you confirm the deletion of {vault[idx]['site']}? (y/n): ").lower()
-            check_and_reset_timer()
-            if confirm == "y":
-                deleted_entry = vault[idx]
-                del vault[idx]
-                logging.info(f"Deleted entry for site: {deleted_entry['site']}, username: {deleted_entry['username']}")
-                print("Entry deleted.")
+        show_entries(vault, copy_enabled=False, justView_enabled=False)
+        if not vault:
+            return
+
+        try:
+            idx = get_valid_input("ID to delete (or leave blank to cancel): ", allow_empty=True)
+            if not idx:
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return  # Return to the menu
+            idx = int(idx) - 1
+            if 0 <= idx < len(vault):
+                confirm = get_valid_input(f"Do you confirm the deletion of {vault[idx]['site']}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
+                if not confirm or confirm == "n":
+                    print("cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+                elif confirm == "y":
+                    deleted_entry = vault[idx]
+                    del vault[idx]
+                    logging.info(f"Deleted entry for site: {deleted_entry['site']}, username: {deleted_entry['username']}")
+                    print("Entry deleted.")
+                    break  # Exit the loop after successful deletion
+                else:
+                    print("Invalid option. Please try again.")
             else:
-                print("Cancelled.")
-        else:
-            print("Invalid index.")
-    except ValueError:
-        print("Invalid input.")
-
-
+                print("Invalid index. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a valid number.")
 #-------------------------------------------------
 
 
 # Edit an entry
 def edit_entry(vault: list):
-    check_and_reset_timer()  # Enforce timeout globally
+    while True:  # Loop until valid input is provided
+        check_and_reset_timer()  # Enforce timeout globally
 
-    show_entries(vault, copy_enabled=False, justView_enabled=False)
-    if not vault:
-        return
-    try:
-        idx = int(input("Enter the account index to edit (leave blank to cancel): ").strip()) - 1
-        check_and_reset_timer()
+        show_entries(vault, copy_enabled=False, justView_enabled=False)
+        if not vault:
+            return
 
-        # Check if the index is valid
-        if 0 <= idx < len(vault):
-            entry = vault[idx]
-            original_entry = entry.copy()  # Keep a copy of the original entry for logging
-            print(f"Editing {entry['site']}")
+        try:
+            idx = get_valid_input("Enter the account index to edit (leave blank to cancel): ", allow_empty=True)
+            if not idx:
+                print("cancelled...")
+                time.sleep(3)  # Add delay for cancellation
+                return
+            idx = int(idx) - 1
 
-            # Ask for new values
-            new_user = input(f"New username (leave blank to keep '{entry['username']}'): ").strip()
-            new_url = input(f"New URL (leave blank to keep '{entry['url']}'): ").strip()
-            check_and_reset_timer()
+            if 0 <= idx < len(vault):
+                entry = vault[idx]
+                original_entry = entry.copy()  # Keep a copy of the original entry for logging
+                print(f"Editing {entry['site']}")
 
-            # Ask for type of password change
-            print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password")
-            choice = input("> ").strip()
-            check_and_reset_timer()
+                new_user = get_valid_input(f"New username (leave blank to keep '{entry['username']}'): ", allow_empty=True)
+                new_url = get_valid_input(f"New URL (leave blank to keep '{entry['url']}'): ", allow_empty=True)
 
-            new_pwd = None
-            if choice == "2":
-                new_pwd = getpass.getpass("New password: ").strip()
-            elif choice == "3":
-                length = input("Password length (default 24): ").strip()
-                length = int(length) if length.isdigit() else 24
-                new_pwd = generate_password(length)
-                print(f"Generated password: {new_pwd}")
+                print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password\n[0] Cancel")
+                choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
-            # Update the entry with new values
-            if new_user:
-                entry['username'] = new_user
-            if new_url:
-                entry['url'] = new_url
-            if new_pwd:
-                entry['password'] = new_pwd
+                new_pwd = None
+                if choice == "0":
+                    print("cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+                elif choice == "2":
+                    new_pwd = getpass.getpass("New password (or leave blank to cancel): ").strip()
+                    if not new_pwd:
+                        print("cancelled...")
+                        time.sleep(3)  # Add delay for cancellation
+                        return  # Return to the menu
+                elif choice == "3":
+                    length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
+                    if not length:
+                        print("cancelled...")
+                        time.sleep(3)  # Add delay for cancellation
+                        return  # Return to the menu
+                    length = int(length) if length.isdigit() else 24
+                    new_pwd = generate_password(length)
+                    print(f"Generated password: {new_pwd}")
 
-            # Log the changes
-            changes = []
-            if new_user and new_user != original_entry['username']:
-                changes.append(f"Username changed from '{original_entry['username']}' to '{new_user}'")
-            if new_url and new_url != original_entry['url']:
-                changes.append(f"URL changed from '{original_entry['url']}' to '{new_url}'")
-            if new_pwd:
-                changes.append("Password was modified (not logged for security)")
+                # Update the entry with new values
+                if new_user:
+                    entry['username'] = new_user
+                if new_url:
+                    entry['url'] = new_url
+                if new_pwd:
+                    entry['password'] = new_pwd
 
-            logging.info(f"Edited entry for site: {entry['site']}. Changes: {', '.join(changes)}")
-            print("Account updated.")
-        else:
-            print("Invalid index.")
-    except ValueError:
-        print("Invalid input.")
+                # Log the changes
+                changes = []
+                if new_user and new_user != original_entry['username']:
+                    changes.append(f"Username changed from '{original_entry['username']}' to '{new_user}'")
+                if new_url and new_url != original_entry['url']:
+                    changes.append(f"URL changed from '{original_entry['url']}' to '{new_url}'")
+                if new_pwd:
+                    changes.append("Password was modified (not logged for security)")
 
+                logging.info(f"Edited entry for site: {entry['site']}. Changes: {', '.join(changes)}")
+                print("Account updated.")
+                break  # Exit the loop after successful edit
+            else:
+                print("Invalid index. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a valid number.")
 
 #-------------------------------------------------
 
@@ -783,7 +841,8 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
                         pyperclip.copy("")
                     threading.Thread(target=clear_clipboard, daemon=True).start()
                 else:
-                    print("Invalid index.")
+                    print("Cancel")
+                    time.sleep(3)
         except ValueError:
             print("Invalid input.")
 
@@ -819,62 +878,74 @@ def export_vault():
 
 # Menu search logs to a file
 def search_logs_menu(log_file: str, fernet: Fernet):
-    try:
-        
-        clear_screen() 
-        show_title()
-        print("\nSEARCH LOGS")
-        print("[1] Filter by Date (e.g., 2025-05-07)")
-        print("[2] Filter by Log Level (e.g., INFO, ERROR)")
-        print("[3] Filter by Keyword")
-        print("[4] Combine Filters (e.g., Date + Log Level)")
-        filter_type = input("Choose a filter option: ").strip()
+    while True:  # Loop until valid input is provided
+        try:
+            clear_screen()
+            show_title()
+            print("\nSEARCH LOGS")
+            print("[1] Filter by Date (e.g., 2025-05-07)")
+            print("[2] Filter by Log Level (e.g., INFO, ERROR)")
+            print("[3] Filter by Keyword")
+            print("[4] Combine Filters (e.g., Date + Log Level)")
+            print("\n[0] Cancel\n")
+            filter_type = get_valid_input("Choose a filter option: ", valid_options=["0", "1", "2", "3", "4"])
 
-        if filter_type not in {"1", "2", "3", "4"}:
-            print("Invalid option. Returning to the menu.")
-            return
-        
-        # Get filter values based on the selected option
-        date_filter = None
-        level_filter = None
-        keyword_filter = None
+            if filter_type == "0":
+                print("Cancelled...")
+                time.sleep(3)
+                return  # Return to the menu
 
-        if filter_type in {"1", "4"}:
-            date_filter = input("Enter the date (YYYY-MM-DD): ").strip()
-        if filter_type in {"2", "4"}:
-            level_filter = input("Enter the log level (INFO, WARNING, ERROR): ").strip().upper()
-        if filter_type in {"3", "4"}:
-            keyword_filter = input("Enter the keyword to search for: ").strip()
+            # Get filter values based on the selected option
+            date_filter = None
+            level_filter = None
+            keyword_filter = None
 
+            if filter_type in {"1", "4"}:
+                date_filter = get_valid_input("Enter the date (YYYY-MM-DD, or leave blank to cancel): ", allow_empty=True)
+                if not date_filter:
+                    print("Cancelled...")
+                    time.sleep(3)  # Add delay for cancellation
+                    return  # Return to the menu
+            if filter_type in {"2", "4"}:
+                level_filter = get_valid_input("Enter the log level (INFO, WARNING, ERROR, or leave blank to cancel): ", allow_empty=True).upper()
+                if not level_filter:
+                    print("cancelled...")
+                    time.sleep(3)
+                    return  # Return to the menu
+            if filter_type in {"3", "4"}:
+                keyword_filter = get_valid_input("Enter the keyword to search for (or leave blank to cancel): ", allow_empty=True)
+                if not keyword_filter:
+                    print("cancelled...")
+                    time.sleep(3)
+                    return  # Return to the menu
 
-        clear_screen()
-        show_title()
-        print("\nFILTERED LOGS:\n")
-        with open(log_file, "rb") as f:
-            for line in f:
-                if not line.strip():  # Skip empty lines
-                    continue
-                try:
-                    decrypted = fernet.decrypt(line.strip()).decode()
-
-                    # Apply filters
-                    if date_filter and date_filter not in decrypted.split(" ")[0]:
+            clear_screen()
+            show_title()
+            print("\nFILTERED LOGS:\n")
+            with open(log_file, "rb") as f:
+                for line in f:
+                    if not line.strip():  # Skip empty lines
                         continue
-                    if level_filter and level_filter not in decrypted:
-                        continue
-                    if keyword_filter and keyword_filter.lower() not in decrypted.lower():
-                        continue
+                    try:
+                        decrypted = fernet.decrypt(line.strip()).decode()
 
-                    # Print the matching log entry
-                    print(decrypted)
-                except InvalidToken:
-                    print("Warning: Skipping an invalid or corrupted log entry.")
-                except Exception as e:
-                    print(f"Error processing a log entry: {e}")
-    except Exception as e:
-        print(f"Error searching logs: {e}")
+                        # Apply filters
+                        if date_filter and date_filter not in decrypted.split(" ")[0]:
+                            continue
+                        if level_filter and level_filter not in decrypted:
+                            continue
+                        if keyword_filter and keyword_filter.lower() not in decrypted.lower():
+                            continue
 
-    input("\nPress Enter to return to the menu...")
+                        # Print the matching log entry
+                        print(decrypted)
+                    except InvalidToken:
+                        print("Warning: Skipping an invalid or corrupted log entry.")
+                    except Exception as e:
+                        print(f"Error processing a log entry: {e}")
+        except Exception as e:
+            print(f"Error searching logs: {e}")
+        input("\nPress Enter to return to the menu...")
 
 
 def export_logs(log_file: str, fernet: Fernet):
@@ -911,7 +982,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
         print("[2] Search logs by filter")
         print("[3] Export logs to a file")
         print("\n[0] Return to the previous menu\n")
-        choice = input("> ").strip()
+        choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
         if choice == "1":
             # View all logs
@@ -926,10 +997,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
             # Export logs to a file
             export_logs(log_file, fernet)
         elif choice == "0":
-            # Return to the previous menu
             break
-        else:
-            print("Invalid option.")# Pause before returning to the menu
 
 
 #-------------------------------------------------
@@ -945,20 +1013,19 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
         print("[1] Export keys")
         print("[2] View log menu")
         print("[3] Export crypted vault backup")
-        print("\n[4] Return to the menu\n")
-        choice = input("> ").strip()
+        print("\n[0] Return to the menu\n")
+        choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
         if choice == "1":
-            export_path = input("Enter the path to export the keys: ").strip()
+            export_path = get_valid_input("Enter the path to export the keys: ", allow_empty=False)
             export_keys(fernet, export_path)
         elif choice == "2":
-            log_view_menu(LOG_FILE, log_fernet) 
+            log_view_menu(LOG_FILE, log_fernet)
         elif choice == "3":
             export_vault()
-        elif choice == "4":
+        elif choice == "0":
             break
-        else:
-            print("Invalid option.")
+
 
 # Manage entries in the vault
 def manage_entries(vault: list, fernet: Fernet):
@@ -975,7 +1042,7 @@ def manage_entries(vault: list, fernet: Fernet):
         print("[5] Auto-login (vulnerable to keyloggers)")
         print("[6] Check passwords integrity")
         print("\n[0] Return to the menu\n")
-        choice = input("> ").strip()
+        choice = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4", "5", "6"])
 
         if choice == "1":
             show_entries(vault, copy_enabled=False)
@@ -993,8 +1060,6 @@ def manage_entries(vault: list, fernet: Fernet):
             check_vault_passwords(vault)
         elif choice == "0":
             break
-        else:
-            print("Invalid option.")
 
 
 #-------------------------------------------------
@@ -1106,7 +1171,7 @@ def main():
             print("[2] Manage accounts")
             print("[3] Advanced options")
             print("\n[0] Exit\n")
-            choice = input("> ").strip()
+            choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
             if choice == "1":
                 add_entry(vault)
@@ -1114,13 +1179,10 @@ def main():
             elif choice == "2":
                 manage_entries(vault, fernet)
             elif choice == "3":
-                advanced_options(vault, fernet,log_fernet)
+                advanced_options(vault, fernet, log_fernet)
             elif choice == "0":
                 logging.info("User logged out.")
                 break
-            else:
-                print("Invalid option.")
-                logging.warning("Invalid option selected in the main menu.")
     except Exception as e:
         logging.error(f"Unexpected error in main loop: {e}")
     finally:
