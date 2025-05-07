@@ -5,14 +5,14 @@ This application allows you to securely store, manage, and generate passwords, w
 
 # Features
 
-Secure Vault: Encrypts and stores your passwords securely using the cryptography library.                                                                                                                          
-Password Generation:   Generate strong, random passwords with customizable length and special characters.                                       
-Encrypted Logging:   Logs are encrypted to ensure sensitive information is protected.                                      
-Clipboard Management:   Copy passwords to the clipboard with automatic clearing after 30 seconds.                                      
-Auto-Login:   Simulates typing credentials into websites for quick login.                                      
-HIBP Integration:   Checks if your passwords have been compromised in known data breaches.                                      
-Session Timeout:   Automatically logs out after a period of inactivity.                                      
-Backup and Export:   Backup and export your vault and logs securely.                                      
+Secure Vault:    Encrypts and stores your passwords securely using the cryptography library.                                                                                                                        
+Password Generation:    Generate strong, random passwords with customizable length and special characters.                                       
+Encrypted Logging:    Logs are encrypted to ensure sensitive information is protected.                                      
+Clipboard Management:    Copy passwords to the clipboard with automatic clearing after 30 seconds.                                      
+Auto-Login:    Simulates typing credentials into websites for quick login.                                      
+HIBP Integration:    Checks if your passwords have been compromised in known data breaches.                                      
+Session Timeout:    Automatically logs out after a period of inactivity.                                      
+Backup and Export:    Backup and export your vault and logs securely.                                      
 
 # Requirements
 The application requires the following Python libraries:                                      
@@ -23,10 +23,6 @@ pyperclip==1.8.2          # For clipboard operations
 pyautogui==0.9.53         # For simulating keyboard and mouse actions                                      
 keyring==24.2.0           # For securely storing and retrieving keys                                      
 ```
-
-# Install the dependencies using:
-
-pip install -r requirements.txt
 
 # Installation
 
