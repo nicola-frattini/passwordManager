@@ -16,13 +16,13 @@ Backup and Export: Backup and export your vault and logs securely.
 
 # Requirements
 The application requires the following Python libraries:                                      
-
+```
 cryptography==41.0.3      # For encryption, decryption, and key derivation                                      
 requests==2.31.0          # For HIBP API calls                                                                            
 pyperclip==1.8.2          # For clipboard operations                                                                            
 pyautogui==0.9.53         # For simulating keyboard and mouse actions                                      
 keyring==24.2.0           # For securely storing and retrieving keys                                      
-
+```
 
 # Install the dependencies using:
 
@@ -30,15 +30,17 @@ pip install -r requirements.txt
 
 # Installation
 
-### 1. Clone the repository:                                                                            
+### 1. Clone the repository:                
+```
 git clone https://github.com/your-username/passwordManager.git                                      
-cd passwordManager                                                                            
-                                      
+cd passwordManager
+```                                   
 ### 2. Install the required dependencies:                                                                            
-pip install -r requirements.txt                                                                            
+
+```pip install -r requirements.txt          ```                                                                  
 
 ### 3. Run the application:                                                                            
-python passwordManager.py                                                                            
+```python passwordManager.py     ```                                                                       
 
 
 # Security Features
@@ -63,15 +65,15 @@ Automatically clears copied passwords from the clipboard after 30 seconds.
 The application uses a config.py file to manage settings:
 
 # File Structure
-
-passwordManager/
+```
+passwordManager/                                                                   
 ├── passwordManager.py       # Main application file                                                                            
 ├── config.py                # Configuration file                                                                            
 ├── requirements.txt         # Dependencies                                                                            
 ├── secure_vault/            # Encrypted vault and salt files                                                                            
 ├── log_backups/             # Backup logs                                                                            
 └── README.md                # Documentation                                                                            
-
+```
 
 # License
 This project is licensed under the MIT License. See the LICENSE file for details.
