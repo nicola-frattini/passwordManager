@@ -9,6 +9,10 @@ import getpass
 import ctypes
 import stat
 import uuid
+
+import hashlib
+import requests
+
 from hashlib import sha256
 
 import time
@@ -256,8 +260,69 @@ def install_missing_packages():
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 
+#-------------------------------------------------
 
-#----------------------------------
+
+# Check if the password has been compromised using HIBP API
+def check_password_hibp(password: str) -> bool:
+
+    sha1_hash = hashlib.sha1(password.encode()).hexdigest().upper()
+    prefix, suffix = sha1_hash[:5], sha1_hash[5:]
+
+    # Query the HIBP API with the first 5 characters of the hash
+    url = f"https://api.pwnedpasswords.com/range/{prefix}"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code != 200:
+            print("Error querying HIBP API.")
+            return False
+
+        # Check if the suffix exists in the response
+        hashes = response.text.splitlines()
+        for line in hashes:
+            hash_suffix, count = line.split(":")
+            if hash_suffix == suffix:
+                logging.warning(f"Password found in {count} breaches!")
+                print(f"Password found in {count} breaches!")
+                return True
+
+        print("Password not found in any known breaches.")
+        return False
+    except requests.RequestException as e:
+        logging.error(f"Error connecting to HIBP API: {e}")
+        print(f"Error connecting to HIBP API: {e}")
+        return False
+
+
+#--------------------------------------------------
+
+
+# Check if the password has been compromised using HIBP API for all passwords in the vault
+def check_vault_passwords(vault: list):
+
+    logging.info("Checking passwords in the vault...")
+    if not vault:
+        print("The vault is empty.")
+        return
+    clear_screen()
+    show_title()
+    print("\nCHECK PASSWORDS\n")
+
+    print("\nChecking passwords in the vault...\n")
+    for entry in vault:
+        site = entry['site']
+        password = entry['password']
+        print(f"Checking password for site: {site}")
+        if check_password_hibp(password):
+            logging.warning(f"Password for {site} has been compromised!")
+            print(f"WARNING: The password for {site} has been compromised! Change the password immidiately!.")
+        else:
+            print(f"The password for {site} is safe.")
+
+    input("\nPress Enter to return to the menu...")
+
+
+#-------------------------------------------------
 
 
 # Variables for session timeout
@@ -563,7 +628,7 @@ def add_entry(vault: list):
 
         vault.append({"site": site, "username": user, "password": pwd, "url": url})
         print("Credentials entered correctly.")
-        logging.info(f"Added new entry for site: {site}")
+        logging.info(f"Added new entry for site: {site}, url: {url}")
     except ValueError:
         print("Invalid input. Please try again.")
         logging.error("ValueError occurred while adding an entry.")
@@ -835,11 +900,11 @@ def log_view_menu(log_file: str, fernet: Fernet):
 
         clear_screen()
         show_title()
-        print("\nLOG VIEW MENU")
+        print("\nLOG VIEW MENU\n")
         print("[1] View all logs")
         print("[2] Search logs by filter")
         print("[3] Export logs to a file")
-        print("[4] Return to the previous menu")
+        print("\n[0] Return to the previous menu\n")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -854,7 +919,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
         elif choice == "3":
             # Export logs to a file
             export_logs(log_file, fernet)
-        elif choice == "4":
+        elif choice == "0":
             # Return to the previous menu
             break
         else:
@@ -870,11 +935,11 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
 
         clear_screen()
         show_title()
-        print("\nADVANCED OPTIONS")
+        print("\nADVANCED OPTIONS\n")
         print("[1] Export keys")
         print("[2] View log menu")
         print("[3] Export crypted vault backup")
-        print("[4] Return to the menu")
+        print("\n[4] Return to the menu\n")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -896,13 +961,14 @@ def manage_entries(vault: list, fernet: Fernet):
 
         clear_screen()
         show_title()
-        print("\nACCOUNT MANAGEMENT")
+        print("\nACCOUNT MANAGEMENT\n")
         print("[1] View all")
         print("[2] Copy a password")
         print("[3] Edit an account")
         print("[4] Delete an account")
         print("[5] Auto-login (vulnerable to keyloggers)")
-        print("[6] Return to the menu")
+        print("[6] Check passwords integrity")
+        print("\n[0] Return to the menu\n")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -918,6 +984,8 @@ def manage_entries(vault: list, fernet: Fernet):
         elif choice == "5":
             auto_login(vault)
         elif choice == "6":
+            check_vault_passwords(vault)
+        elif choice == "0":
             break
         else:
             print("Invalid option.")
@@ -965,7 +1033,7 @@ def auto_login(vault: list):
             webbrowser.open(entry['url'])  # Open the URL in the default browser
 
             # Wait for the browser to load
-            time.sleep(5)
+            time.sleep(3)
 
             # Simulate typing the username and password
             pyautogui.typewrite(entry['username'])
@@ -1026,10 +1094,12 @@ def main():
 
             clear_screen()
             show_title()
+
+            print("\nMAIN MENU\n")
             print("[1] Add an account")
             print("[2] Manage accounts")
             print("[3] Advanced options")
-            print("[4] Exit\n")
+            print("\n[0] Exit\n")
             choice = input("> ").strip()
 
             if choice == "1":
@@ -1039,7 +1109,7 @@ def main():
                 manage_entries(vault, fernet)
             elif choice == "3":
                 advanced_options(vault, fernet,log_fernet)
-            elif choice == "4":
+            elif choice == "0":
                 logging.info("User logged out.")
                 break
             else:
