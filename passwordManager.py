@@ -386,11 +386,16 @@ def secure_file(file_path: str, grant_access=False):
 
 
 # Generate a random 
-def generate_password(length: int = 24) -> str:
+def generate_password(length: int = 24,include_special_chars:bool = True) -> str:
+
     if length < 8:
         print(" Minimum password's length is 8 char.")
         return ""
-    characters = string.ascii_letters + string.digits + string.punctuation
+    mandatory_special_character = "@#!+=_-"
+    characters = string.ascii_letters + string.digits
+    if include_special_chars:
+        characters += mandatory_special_character
+
     password = ''.join(secrets.choice(characters) for _ in range(length))
     return password
 
@@ -619,7 +624,8 @@ def add_entry(vault: list):
         elif choice == "2":
             length = input("Password length (default 24): ").strip()
             length = int(length) if length.isdigit() else 24
-            pwd = generate_password(length)
+            include_special_chars = input("Include special characters? (y/n): ").strip().lower()
+            pwd = generate_password(length,include_special_chars=="y")
             print(f"Password generated: {pwd}")
         else:
             print("Option not valid.")
