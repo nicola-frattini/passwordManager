@@ -1,7 +1,5 @@
 #COSE DA FARE
 
-#Problema con la crittografia e decrittografia dei log
-#Rotation dei file di log
 
 
 import os
@@ -23,6 +21,7 @@ from cryptography.fernet import InvalidToken
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
+from logging.handlers import RotatingFileHandler
 
 import webbrowser
 import pyautogui
@@ -64,7 +63,7 @@ def create_secure_folder():
         # Restrict folder permissions to the owner (read, write, execute)
         os.chmod(SECURE_FOLDER, stat.S_IRWXU)
 
-        # Make the folder hidden (Windows only)
+        # Make the folder hidden (Windows only) 
         try:
             FILE_ATTRIBUTE_HIDDEN = 0x02
             result = ctypes.windll.kernel32.SetFileAttributesW(SECURE_FOLDER, FILE_ATTRIBUTE_HIDDEN)
@@ -83,9 +82,86 @@ def create_backup_folder():
 
 #-----------------------------------
 
+
+# Configure logging with rotation
+LOG_FILE = "password_manager.log"
+LOG_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
+
+def setup_logging(fernet: Fernet):
+    logger = logging.getLogger()
+    logger.handlers.clear()  # Clear existing handlers
+
+    rotating_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=LOG_MAX_SIZE
+    )
+
+    rotating_handler.setLevel(logging.INFO)
+    rotating_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+
+    # Encrypted log handler
+    encrypted_handler = EncryptedLogHandler(fernet)
+    encrypted_handler.setLevel(logging.INFO)
+
+    # Add handlers to the logger
+    logger.addHandler(encrypted_handler)  # Encrypted logs
+    logger.setLevel(logging.INFO)
+
+
+
+
+class EncryptedLogHandler(logging.Handler):
+    def __init__(self, fernet):
+        super().__init__()
+        self.fernet = fernet
+        self.formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+    def emit(self, record):
+        try:
+
+            # Create a formatter for the log message
+
+            msg = self.format(record)
+
+            # Encrypt the log message
+            encrypted = self.fernet.encrypt(msg.encode())
+
+            # Write the encrypted log message to the log file
+            with open(LOG_FILE, "ab") as f:
+                f.write(encrypted + b"\n")
+        except Exception as e:
+            print(f"Error writing encrypted log: {e}")
+            logging.error(f"Error in EncryptedLogHandler: {e}")
+
+
+            
+
+
+def decrypt_logs(log_file: str, fernet: Fernet):
+    try:
+        with open(log_file, "rb") as f:
+            for line in f:
+                if not line.strip():  # Skip empty lines
+                    continue
+                try:
+                    decrypted = fernet.decrypt(line.strip())
+                    print(decrypted.decode()) # Print the decrypted log entry
+                except InvalidToken:
+                    print("Warning: Skipping an invalid or corrupted log entry.")
+                except Exception as e:
+                    print(f"Error processing a log entry: {e}")
+                    
+    except FileNotFoundError:
+        print(f"Log file '{log_file}' not found.")
+    except Exception as e:
+        print(f"Error decrypting logs: {e}")
+
+    input("\nPress Enter to return to the menu...")
+
+
+#----------------------------------------------------
+
 # Create a backup of the log file
 def backup_logs():
-
     try:
         # Ensure the backup folder exists
         create_backup_folder()
@@ -107,6 +183,18 @@ def backup_logs():
     except Exception as e:
         print(f"Error backing up logs: {e}")
         logging.error(f"Error backing up logs: {e}")
+
+    # Delete old log backups (older than 30 days)
+    for f in os.listdir(LOG_BACKUP_FOLDER):
+        file_path = os.path.join(LOG_BACKUP_FOLDER, f)  # Prepend the folder path
+        try:
+            if os.stat(file_path).st_mtime < (time.time() - 30 * 86400):
+                os.remove(file_path)
+                logging.info(f"Deleted old backup: {file_path}")
+        except FileNotFoundError:
+            logging.warning(f"File not found during cleanup: {file_path}")
+        except Exception as e:
+            logging.error(f"Error deleting old backup {file_path}: {e}")
 
 
 #-------------------------------------------------
@@ -148,7 +236,6 @@ def export_keys(master_password: str, export_path: str):
         logging.error(f"Error exporting keys: {e}")
 
 
-
 #-------------------------------------------------
 
 
@@ -169,7 +256,6 @@ def install_missing_packages():
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 
-#--------------------------
 
 #----------------------------------
 
@@ -637,8 +723,120 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
 #-------------------------------------------------
 
 
+# Menu search logs to a file
+def search_logs_menu(log_file: str, fernet: Fernet):
+    try:
+        
+        clear_screen() 
+        print("\nSEARCH LOGS")
+        print("[1] Filter by Date (e.g., 2025-05-07)")
+        print("[2] Filter by Log Level (e.g., INFO, ERROR)")
+        print("[3] Filter by Keyword")
+        print("[4] Combine Filters (e.g., Date + Log Level)")
+        filter_type = input("Choose a filter option: ").strip()
 
-def advanced_options(vault: list, fernet: Fernet):
+        if filter_type not in {"1", "2", "3", "4"}:
+            print("Invalid option. Returning to the menu.")
+            return
+        
+        # Get filter values based on the selected option
+        date_filter = None
+        level_filter = None
+        keyword_filter = None
+
+        if filter_type in {"1", "4"}:
+            date_filter = input("Enter the date (YYYY-MM-DD): ").strip()
+        if filter_type in {"2", "4"}:
+            level_filter = input("Enter the log level (INFO, WARNING, ERROR): ").strip().upper()
+        if filter_type in {"3", "4"}:
+            keyword_filter = input("Enter the keyword to search for: ").strip()
+
+
+        clear_screen()
+        print("\nFILTERED LOGS:\n")
+        with open(log_file, "rb") as f:
+            for line in f:
+                if not line.strip():  # Skip empty lines
+                    continue
+                try:
+                    decrypted = fernet.decrypt(line.strip()).decode()
+
+                    # Apply filters
+                    if date_filter and date_filter not in decrypted.split(" ")[0]:
+                        continue
+                    if level_filter and level_filter not in decrypted:
+                        continue
+                    if keyword_filter and keyword_filter.lower() not in decrypted.lower():
+                        continue
+
+                    # Print the matching log entry
+                    print(decrypted)
+                except InvalidToken:
+                    print("Warning: Skipping an invalid or corrupted log entry.")
+                except Exception as e:
+                    print(f"Error processing a log entry: {e}")
+    except Exception as e:
+        print(f"Error searching logs: {e}")
+
+
+def export_logs(log_file: str, fernet: Fernet):
+    try:
+        export_path = input("Enter the path to export the logs (e.g., logs_export.txt): ").strip()
+        with open(log_file, "rb") as f, open(export_path, "w") as export_file:
+            for line in f:
+                if not line.strip():  # Skip empty lines
+                    continue
+                try:
+                    decrypted = fernet.decrypt(line.strip()).decode()
+                    export_file.write(decrypted + "\n")
+                except InvalidToken:
+                    export_file.write("Warning: Skipping an invalid or corrupted log entry.\n")
+                except Exception as e:
+                    export_file.write(f"Error processing a log entry: {e}\n")
+        print(f"Logs exported successfully to {export_path}")
+    except Exception as e:
+        print(f"Error exporting logs: {e}")
+
+
+#--------------------------------------------------
+
+
+# Menu for log options
+def log_view_menu(log_file: str, fernet: Fernet):
+    while True:
+        check_and_reset_timer()  # Enforce timeout globally
+
+        clear_screen()
+        show_title()
+        print("\nLOG VIEW MENU")
+        print("[1] View all logs")
+        print("[2] Search logs by filter")
+        print("[3] Export logs to a file")
+        print("[4] Return to the previous menu")
+        choice = input("> ").strip()
+
+        if choice == "1":
+            # View all logs
+            print("\nALL LOGS:\n")
+            decrypt_logs(log_file, fernet)
+        elif choice == "2":
+            # Search logs by filter
+            search_logs_menu(log_file, fernet)
+        elif choice == "3":
+            # Export logs to a file
+            export_logs(log_file, fernet)
+        elif choice == "4":
+            # Return to the previous menu
+            break
+        else:
+            print("Invalid option.")
+        input("\nPress Enter to continue...")  # Pause before returning to the menu
+
+
+#-------------------------------------------------
+
+
+def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
     while True:
         check_and_reset_timer()  # Enforce timeout globally
 
@@ -646,7 +844,7 @@ def advanced_options(vault: list, fernet: Fernet):
         show_title()
         print("\nADVANCED OPTIONS")
         print("[1] Export keys")
-        print("[2] View log")
+        print("[2] View log menu")
         print("[3] Return to the menu")
         choice = input("> ").strip()
 
@@ -654,7 +852,7 @@ def advanced_options(vault: list, fernet: Fernet):
             export_path = input("Enter the path to export the keys: ").strip()
             export_keys(fernet, export_path)
         elif choice == "2":
-            print( "log file: ", LOG_FILE)
+            log_view_menu(LOG_FILE, log_fernet)
         elif choice == "3":
             break
         else:
@@ -672,7 +870,7 @@ def manage_entries(vault: list, fernet: Fernet):
         print("[2] Copy a password")
         print("[3] Edit an account")
         print("[4] Delete an account")
-        print("[5] Auto-login")
+        print("[5] Auto-login (vulnerable to keyloggers)")
         print("[6] Return to the menu")
         choice = input("> ").strip()
 
@@ -750,6 +948,7 @@ def auto_login(vault: list):
         print("Invalid input.")
 
 
+#-------------------------------------------------
 
 
 #-------------------------------------------------
@@ -758,9 +957,6 @@ def auto_login(vault: list):
 # Main function
 def main():
     global last_action
-
-    logging.info("Session started.")
-    log_user_info()
 
     # Ensure the secure folder exists
     create_secure_folder()
@@ -783,6 +979,13 @@ def main():
     vault_key = derive_key(master_pwd, decrypted_salt)
     fernet = Fernet(vault_key)
 
+    # Set up encrypted logging
+    log_fernet = Fernet(derive_key(master_pwd + "LOGS", decrypted_salt))
+    setup_logging(log_fernet)
+
+    logging.info("Session started.")
+    log_user_info()
+
     # Load the vault
     vault = load_vault(fernet)
 
@@ -804,7 +1007,7 @@ def main():
             elif choice == "2":
                 manage_entries(vault, fernet)
             elif choice == "3":
-                advanced_options(vault, fernet)
+                advanced_options(vault, fernet,log_fernet)
             elif choice == "4":
                 logging.info("User logged out.")
                 break
