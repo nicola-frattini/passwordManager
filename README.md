@@ -1,8 +1,5 @@
 # passwordManager
 
- 
-# Password Manager
-
 A secure and feature-rich password manager built with Python. This application allows you to securely store, manage, and generate passwords, while also providing advanced features like encrypted logging, auto-login, and integration with the Have I Been Pwned (HIBP) API to check for compromised passwords.
 
 # Features
