@@ -723,11 +723,35 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
 #-------------------------------------------------
 
 
+# Export the vault to a user-specified location
+def export_vault():
+
+    try:
+        if not os.path.exists(VAULT_FILE):
+            print("Vault file not found. Please ensure the vault is initialized.")
+            return
+
+        export_path = input("Enter the path to export the vault (e.g., backup_vault.enc): ").strip()
+        with open(VAULT_FILE, "rb") as src, open(export_path, "wb") as dst:
+            dst.write(src.read())
+
+        print(f"Vault exported successfully to {export_path}")
+        logging.info(f"Vault exported to {export_path}")
+    except Exception as e:
+        print(f"Error exporting vault: {e}")
+        logging.error(f"Error exporting vault: {e}")
+
+    input("\nPress Enter to return to the menu...")
+
+#--------------------------------------------------
+
+
 # Menu search logs to a file
 def search_logs_menu(log_file: str, fernet: Fernet):
     try:
         
         clear_screen() 
+        show_title()
         print("\nSEARCH LOGS")
         print("[1] Filter by Date (e.g., 2025-05-07)")
         print("[2] Filter by Log Level (e.g., INFO, ERROR)")
@@ -753,6 +777,7 @@ def search_logs_menu(log_file: str, fernet: Fernet):
 
 
         clear_screen()
+        show_title()
         print("\nFILTERED LOGS:\n")
         with open(log_file, "rb") as f:
             for line in f:
@@ -777,6 +802,8 @@ def search_logs_menu(log_file: str, fernet: Fernet):
                     print(f"Error processing a log entry: {e}")
     except Exception as e:
         print(f"Error searching logs: {e}")
+
+    input("\nPress Enter to return to the menu...")
 
 
 def export_logs(log_file: str, fernet: Fernet):
@@ -817,6 +844,8 @@ def log_view_menu(log_file: str, fernet: Fernet):
 
         if choice == "1":
             # View all logs
+            clear_screen()
+            show_title()
             print("\nALL LOGS:\n")
             decrypt_logs(log_file, fernet)
         elif choice == "2":
@@ -829,8 +858,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
             # Return to the previous menu
             break
         else:
-            print("Invalid option.")
-        input("\nPress Enter to continue...")  # Pause before returning to the menu
+            print("Invalid option.")# Pause before returning to the menu
 
 
 #-------------------------------------------------
@@ -845,15 +873,18 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
         print("\nADVANCED OPTIONS")
         print("[1] Export keys")
         print("[2] View log menu")
-        print("[3] Return to the menu")
+        print("[3] Export crypted vault backup")
+        print("[4] Return to the menu")
         choice = input("> ").strip()
 
         if choice == "1":
             export_path = input("Enter the path to export the keys: ").strip()
             export_keys(fernet, export_path)
         elif choice == "2":
-            log_view_menu(LOG_FILE, log_fernet)
+            log_view_menu(LOG_FILE, log_fernet) 
         elif choice == "3":
+            export_vault()
+        elif choice == "4":
             break
         else:
             print("Invalid option.")
