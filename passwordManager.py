@@ -86,10 +86,10 @@ def create_secure_folder():
             result = ctypes.windll.kernel32.SetFileAttributesW(SECURE_FOLDER, FILE_ATTRIBUTE_HIDDEN) # Set the folder attribute to hidden
             if result == 0:  # If the result is 0, the operation failed
                 raise ctypes.WinError()
-            logging.INFO(f"Secure folder is now hidden: {SECURE_FOLDER}")
+            logging.info(f"Secure folder is now hidden: {SECURE_FOLDER}")
         except Exception as e:
             print(f"Hiding folder failed: {e}")
-            logging.INFO(f"Failed to hide folder: {e}")
+            logging.info(f"Failed to hide folder: {e}")
 
 
 #------------------------------------------------------------
@@ -202,8 +202,8 @@ def backup_logs():
             print("No log file found to back up.")
             return
 
-        # Generate a timestamped backup file name
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        # Generate the daily backup file
+        timestamp = time.strftime("%Y-%m-%d")
         backup_file = os.path.join(LOG_BACKUP_FOLDER, f"password_manager_{timestamp}.log")
 
         # Copy the log file to the backup folder
@@ -573,10 +573,12 @@ def init_vault():
 
     # Check if the vault and salt files already exist
     if os.path.exists(SALT_FILE) and os.path.exists(VAULT_FILE):
-        print("Vault already initialized.")
-        return False  # Vault is already initialized
+        return False  # Vault and Salt already initialized
 
     ## Create the secure folder if it doesn't exist
+    clear_screen() 
+    show_title()
+    print("\n CREATING PASSWORD MANAGER \n\n")
     master_pwd = getpass.getpass("Set a master password: ")
     confirm_pwd = getpass.getpass("Confirm the master password: ")
     if master_pwd != confirm_pwd:
@@ -587,6 +589,7 @@ def init_vault():
     salt = os.urandom(16)
     with open(SALT_FILE, "wb") as f:
         f.write(salt)
+        logging.INFO("Salt file created.")
 
     # Encrypt the salt file
     encrypt_salt_file(master_pwd)
@@ -654,7 +657,7 @@ def save_vault(fernet: Fernet, vault: list):
         # Compute and display the hash of the saved file
         file_hash = compute_file_hash(VAULT_FILE)
         if file_hash:
-            logging.INFO(f"Vault saved successfully. File hash: {file_hash}")
+            logging.info(f"Vault saved successfully. File hash: {file_hash}")
 
     # Exception handling
     except FileNotFoundError:
@@ -746,7 +749,7 @@ def add_entry(vault: list):
             print(f"Unexpected error adding an entry: {e}")
             logging.error(f"Unexpected error: {e}")
 
-        input("\nPress Enter to return to the menu...")
+    input("\nPress Enter to return to the menu...")
 
 
 #-------------------------------------------------
@@ -1029,7 +1032,7 @@ def search_logs_menu(log_file: str, fernet: Fernet):
                         # Print the matching log entry
                         print(decrypted)
                     except InvalidToken:
-                        print("Warning: Skipping an invalid or corrupted log entry.")
+                        print("")()
                     except Exception as e:
                         print(f"Error processing a log entry: {e}")
         except Exception as e:
@@ -1253,6 +1256,9 @@ def main():
     init_vault()
 
     # Ask for master password
+    clear_screen()
+    show_title()
+    print("\nWELCOME BACK\n\n")
     master_pwd = getpass.getpass("Enter the master password: ")
 
     # Decrypt the salt file
