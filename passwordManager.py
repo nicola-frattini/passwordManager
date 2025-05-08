@@ -1,3 +1,4 @@
+from typing import Optional
 from config import *
 import os
 import json
@@ -33,7 +34,11 @@ import logging
 import socket
 import keyring
 from colorama import Fore, Back, Style, init
+
+
+# Initialize colorama to automatically reset text color/style after each print
 init(autoreset=True)
+
 
 #-------------------------------------------------
 
@@ -194,7 +199,7 @@ def decrypt_logs(log_file: str, fernet: Fernet):
 
                 # Exception handling for specific cases
                 except InvalidToken:
-                    print(Fore.RED + "Warning: Skipping an invalid or corrupted log entry.")
+                    print("")
                 except Exception as e:
                     print(Fore.RED + f"Error processing a log entry: {e}")
 # Exception handling for specific cases
@@ -237,7 +242,7 @@ def backup_logs():
     for f in os.listdir(LOG_BACKUP_FOLDER):
         file_path = os.path.join(LOG_BACKUP_FOLDER, f)  # Prepend the folder path
         try:
-            if os.stat(file_path).st_mtime < (time.time() - 30 * 86400):
+            if os.stat(file_path).st_mtime < (time.time() - BACKUP_RETENTION_DAYS * 86400):
                 os.remove(file_path)
                 logging.info(f"Deleted old backup: {file_path}")
         except FileNotFoundError:
@@ -259,31 +264,89 @@ def log_user_info():
 #--------------------------------------------------
 
 
-# Export keys to a file
-def export_keys(master_password: str, export_path: str):
-# master_password - The master password used for encryption
-# export_path - The path to the export file
-
+# Export all keys to a file
+def export_keys(export_path: str, master_password: str,salt: bytes):
+   
     try:
-        # Retrieve the encryption key and salt encryption key
-        encryption_key = keyring.get_password(SERVICE_NAME, "encryption_key")
-        salt_encryption_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
+        
+        steps = [
+            "Decrypting the salt file...",
+            "Deriving encryption keys...",
+            "Retrieving stored keys...",
+            "Writing keys to the export file..."
+        ]
 
-        if not encryption_key or not salt_encryption_key: # Check if keys are found in keyring
-            print(Fore.RED + "Keys not found in keyring.")
+        # Initialize the progress bar
+        progress_bar = tqdm.tqdm(steps, desc="Exporting Keys", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
+
+        # Step 1: Decrypt the salt file
+        progress_bar.set_description(steps[0])
+        salt = decrypt_salt_file(master_password)
+        progress_bar.update(1)
+
+        # Step 2: Derive the encryption key, salt encryption key, and log key
+        progress_bar.set_description(steps[1])
+        encryption_key = get_encryption_key(master_password, salt)
+        salt_encryption_key = get_salt_encryption_key(master_password, salt)
+        log_key = derive_key(master_password + "LOGS", salt)
+        progress_bar.update(1)
+
+        # Step 3: Retrieve additional keys from the keyring
+        progress_bar.set_description(steps[2])
+        stored_encryption_key = keyring.get_password(SERVICE_NAME, "encryption_key")
+        stored_salt_encryption_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
+        progress_bar.update(1)
+
+        # Step 4: Write the keys to the export file
+        progress_bar.set_description(steps[3])
+        if not export_path:
+            progress_bar.close()
+            print(Fore.RED + "Export path cannot be empty.")
             return
 
-        # Write the keys to the export file
         with open(export_path, "w") as f:
-            f.write(f"Encryption Key: {encryption_key}\n")
-            f.write(f"Salt Encryption Key: {salt_encryption_key}\n")
+            os.chmod(export_path, stat.S_IRUSR | stat.S_IWUSR)  # Restrict file permissions to the owner
 
-        print(Fore.RED + f"Keys exported successfully to {export_path}")
+            # Export derived keys
+            f.write("=== Derived Keys ===\n")
+            f.write(f"Encryption Key (Derived): {encryption_key.decode()}\n")
+            f.write(f"Salt Encryption Key (Derived): {salt_encryption_key.decode()}\n")
+            f.write(f"Log Key (Derived): {log_key.decode()}\n")
+
+            # Export stored keys from the keyring
+            f.write("\n=== Stored Keys ===\n")
+            if stored_encryption_key:
+                f.write(f"Encryption Key (Stored): {stored_encryption_key}\n")
+            else:
+                progress_bar.close()
+                f.write("Encryption Key (Stored): Not Found\n")
+
+            if stored_salt_encryption_key:
+                f.write(f"Salt Encryption Key (Stored): {stored_salt_encryption_key}\n")
+            else:
+                progress_bar.close()
+                f.write("Salt Encryption Key (Stored): Not Found\n")
+
+        progress_bar.update(1)
+        progress_bar.close()
+
+        print(Fore.GREEN + f"Keys exported successfully to {export_path}")
         logging.info(f"Keys exported to {export_path}")
 
+    except ValueError as ve:
+        print(Fore.RED + f"Error: {ve}")
+        logging.error(f"Error exporting keys: {ve}")
+    except PermissionError:
+        print(Fore.RED + "Permission denied. Unable to write to the specified path.")
+        logging.error("Permission denied while exporting keys.")
+    except FileNotFoundError:
+        print(Fore.RED + "Invalid path. Please provide a valid file path.")
+        logging.error("Invalid path provided for exporting keys.")
     except Exception as e:
-        print(f"Error exporting keys: {e}")
-        logging.error(f"Error exporting keys: {e}")
+        print(Fore.RED + f"Unexpected error exporting keys: {e}")
+        logging.error(f"Unexpected error exporting keys: {e}")
+
+    input("\nPress Enter to return to the menu...")
 
 
 #-------------------------------------------------
@@ -396,6 +459,8 @@ PEPPER = get_machine_pepper()
 # Derive a key from the master password and salt
 def derive_key(master_password: str, salt: bytes) -> bytes:
 # master_password - The master password used for key derivation
+# salt - The salt used for key derivation
+
     
     master_password += PEPPER # Combine the master password with PEPPER
     
@@ -404,7 +469,7 @@ def derive_key(master_password: str, salt: bytes) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=1_000_000,
+        iterations=PBKDF2_ITERATIONS,
     )
     return base64.urlsafe_b64encode(kdf.derive(master_password.encode())) # Return the derived key in URL-safe base64 format
 
@@ -455,7 +520,7 @@ def generate_password(length: int = PASSWORD_LENGTH_DEFAULT,include_special_char
 
 
 # Get the encryption key from the keyring or generate a new one
-def get_encryption_key(master_password: str) -> bytes:
+def get_encryption_key(master_password: str,salt: bytes) -> bytes:
 ## master_password - The master password used for key derivation
     
     # Try to retrieve the key from keyring
@@ -465,7 +530,7 @@ def get_encryption_key(master_password: str) -> bytes:
         return base64.urlsafe_b64decode(stored_key)
 
     # Generate a new key if not found
-    new_key = Fernet.generate_key()
+    new_key =derive_key(master_password, salt)
 
     # Store the new key in keyring
     keyring.set_password(SERVICE_NAME, "encryption_key", base64.urlsafe_b64encode(new_key).decode())
@@ -486,7 +551,7 @@ def get_salt_encryption_key(master_password: str, salt: bytes) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=480_000,
+        iterations=PBKDF2_ITERATIONS,
     )
     return base64.urlsafe_b64encode(kdf.derive((master_password + "SALT_ENCRYPTION").encode()))
 
@@ -929,14 +994,12 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
     ## Print the header
     print(Fore.MAGENTA + Style.BRIGHT + "\nACCOUNT LIST\n")
     print(Fore.MAGENTA + "{:<5} {:<20} {:<20} {:<20}".format("ID", "Site", "Username", "Password"))
-    print(Fore.MAGENTA + "-" * 65)
+    print(Fore.MAGENTA + "-" * 75)
 
-    viewed_sites = []
     for i, entry in enumerate(vault, 1):
         print(Fore.WHITE + "{:<5} {:<20} {:<20} {:<20}".format(i, entry['site'], entry['username'], '*' * len(entry['password'])))
-        viewed_sites.append(entry['site'])
     
-    logging.info(f"Viewed entries: {', '.join(viewed_sites)}")# Log the viewed entries
+    logging.info(f"Viewed entries")# Log the viewed entries
 
 
     print("\n")
@@ -945,12 +1008,12 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
     if copy_enabled:
         try:
             # Get the index of the entry to copy
-            copy = input(Fore.CYAN + "\nDo you want to copy a password? Enter the index or press Enter to skip: ").strip()
+            copy = input("\nDo you want to copy a password? Enter the index or press Enter to skip: ").strip()
             if copy:
                 idx = int(copy) - 1
                 if 0 <= idx < len(vault):
                     pyperclip.copy(vault[idx]['password']) # Copy the password to the clipboard
-                    logging.info(Fore.GREEN + "Copied password for site: {vault[idx]['site']}") # Log the copied password
+                    logging.info(Fore.GREEN + f"Copied password for site: {vault[idx]['site']}") # Log the copied password
                     print("Password copied to clipboard, it will be ereased in 30 seconds for security.")
 
                     # Start a timer to clear the clipboard after 30 seconds
@@ -1012,7 +1075,7 @@ def search_logs_menu(log_file: str, fernet: Fernet):
             print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Filter by Keyword")
             print(Fore.LIGHTMAGENTA_EX + "[4]" + Fore.WHITE +  " Combine Filters (e.g., Date + Log Level)")
             print(Fore.RED + "\n[0] Back to menu\n")
-            filter_type = get_valid_input("Choose a filter option: ", valid_options=["0", "1", "2", "3", "4"])
+            filter_type = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4"])
 
             if filter_type == "0":
                 print("Back to menu")
@@ -1067,6 +1130,8 @@ def search_logs_menu(log_file: str, fernet: Fernet):
                         print("")()
                     except Exception as e:
                         print(Fore.RED + f"Error processing a log entry: {e}")
+        except Exception as NoneTypeError:
+            print(Fore.RED + "No log has been found.")
         except Exception as e:
             print(Fore.RED + f"Error searching logs: {e}")
         input(Fore.RED + "\nPress Enter to return to the menu...")
@@ -1102,7 +1167,9 @@ def export_logs(log_file: str, fernet: Fernet):
         print(Fore.GREEN + f"Logs exported successfully to {export_path}")
     except Exception as e:
         print(Fore.RED + f"Error exporting logs: {e}")
+        logging.error(f"Error exporting logs: {e}")
 
+    input("\nPress Enter to return to the menu...")
 
 #--------------------------------------------------
 
@@ -1120,7 +1187,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
         print(Fore.MAGENTA + Style.BRIGHT + "\nLOG VIEW MENU\n")
         print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " View all logs")
         print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Search logs by filter")
-        print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Export logs to a file")
+        print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Export decrypted logs to a file")
         print(Fore.RED + "\n[0] Return to the previous menu\n")
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
@@ -1146,7 +1213,7 @@ def log_view_menu(log_file: str, fernet: Fernet):
 
 
 # Menu for advanced options
-def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
+def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet, master_pwd: str,salt: bytes):
 # vault - The list of entries in the vault
 # fernet - The Fernet object used for encryption
 # log_fernet - The Fernet object used for logging
@@ -1164,8 +1231,7 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet):
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
         if choice == "1":
-            export_path = get_valid_input("Enter the path to export the keys: ", allow_empty=False)
-            export_keys(fernet, export_path)
+            export_keys(input("Enter the path to export the keys (e.g., backup_keys.txt): ").strip(),master_pwd,salt)
         elif choice == "2":
             log_view_menu(LOG_FILE, log_fernet)
         elif choice == "3":
@@ -1378,7 +1444,7 @@ def main():
             elif choice == "2":
                 manage_entries(vault, fernet)
             elif choice == "3":
-                advanced_options(vault, fernet, log_fernet)
+                advanced_options(vault, fernet, log_fernet,master_pwd,decrypted_salt)
             elif choice == "0":
                 logging.info("User logged out.")
                 break
@@ -1390,4 +1456,4 @@ def main():
         
 
 if __name__ == "__main__": 
-    main()
+    main()	
