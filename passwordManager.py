@@ -350,7 +350,7 @@ def check_vault_passwords(vault: list):
         
     progress_bar.close()
 
-    print("\nPassword check completed.\n")
+    print(Fore.GREEN + "\nPassword check completed.\n")
     if results:
         for site, message in results:
             print(message)
@@ -1082,6 +1082,9 @@ def export_logs(log_file: str, fernet: Fernet):
 
     try:
         # Ask the user for the export path
+        clear_screen()
+        show_title()
+        print(Fore.MAGENTA + Style.BRIGHT + "\nEXPORT LOGS\n")
         export_path = input("Enter the path to export the logs (e.g., logs_export.txt): ").strip()
         with open(log_file, "rb") as f, open(export_path, "w") as export_file:
             for line in f:
@@ -1132,6 +1135,8 @@ def log_view_menu(log_file: str, fernet: Fernet):
             search_logs_menu(log_file, fernet)
         elif choice == "3":
             # Export logs to a file
+            clear_screen()
+            show_title()
             export_logs(log_file, fernet)
         elif choice == "0":
             break
@@ -1183,12 +1188,12 @@ def manage_entries(vault: list, fernet: Fernet):
         clear_screen()
         show_title()
         print(Fore.MAGENTA + Style.BRIGHT + "\nACCOUNT MANAGEMENT\n")
-        print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  "View all")
-        print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  "Copy a password")
-        print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  "Edit an account")
-        print(Fore.LIGHTMAGENTA_EX + "[4]" + Fore.WHITE +  "Delete an account")
-        print(Fore.LIGHTMAGENTA_EX + "[5]" + Fore.WHITE +  "Auto-login (vulnerable to keyloggers)")
-        print(Fore.LIGHTMAGENTA_EX + "[6]" + Fore.WHITE +  "Check passwords integrity")
+        print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " View all")
+        print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Copy a password")
+        print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Edit an account")
+        print(Fore.LIGHTMAGENTA_EX + "[4]" + Fore.WHITE +  " Delete an account")
+        print(Fore.LIGHTMAGENTA_EX + "[5]" + Fore.WHITE +  " Auto-login (vulnerable to keyloggers)")
+        print(Fore.LIGHTMAGENTA_EX + "[6]" + Fore.WHITE +  " Check passwords integrity")
         print(Fore.RED + "\n[0] Return to the menu\n")
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4", "5", "6"])
 
@@ -1233,7 +1238,7 @@ def show_title():
 ╚────────────────────────────────────────────────────────────────────────╝\n
 """ + Style.RESET_ALL)
     
-    print(Fore.MAGENTA + "                                                    made by @nicola-frattini\n")
+    print(Fore.MAGENTA + "                                                 made by @nicola-frattini\n")
 
 
 #-------------------------------------------------
@@ -1352,6 +1357,7 @@ def main():
 
     progress_bar.close()
     print(Fore.GREEN + "Loading completed successfully.")
+    time.sleep(1)
     try:
         while True:
             check_and_reset_timer()
