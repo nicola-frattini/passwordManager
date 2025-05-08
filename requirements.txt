@@ -3,3 +3,5 @@ requests==2.31.0          # For HIBP API calls
 pyperclip==1.8.2          # For clipboard operations
 pyautogui==0.9.53         # For simulating keyboard and mouse actions
 keyring==24.2.0           # For securely storing and retrieving keys
+colorama==0.4.1           # For colored terminal output
+tqdm==4.65.0              # For progress bars
