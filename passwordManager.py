@@ -305,7 +305,7 @@ def export_keys(export_path: str, master_password: str,salt: bytes):
             return
 
         with open(export_path, "w") as f:
-            os.chmod(export_path, stat.S_IRUSR | stat.S_IWUSR)  # Restrict file permissions to the owner
+            os.chmod(export_path, stat.S_IRUSR | stat   .S_IWUSR)  # Restrict file permissions to the owner
 
             # Export derived keys
             f.write("=== Derived Keys ===\n")
