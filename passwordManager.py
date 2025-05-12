@@ -20,9 +20,8 @@ import pyperclip
 import secrets
 import string
 
-from cryptography.fernet import InvalidToken
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+
 from cryptography.hazmat.primitives import hashes
 from logging.handlers import RotatingFileHandler
 
@@ -34,6 +33,16 @@ import logging
 import socket
 import keyring
 from colorama import Fore, Back, Style, init
+
+from argon2 import PasswordHasher
+from argon2.low_level import hash_secret_raw, Type
+
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
+from cryptography.hazmat.backends import default_backend
+
+
 
 
 # Initialize colorama to automatically reset text color/style after each print
@@ -76,6 +85,62 @@ def get_valid_input(prompt: str, valid_options: list = None, allow_empty: bool =
         return user_input
     
 
+
+#-------------------------------------------------
+
+
+# Encrypt data using AES-256 with the provided key
+def aes_encrypt(data: bytes, key: bytes) -> bytes:
+# data - The plaintext data to encrypt
+# key - The 256-bit encryption key
+
+
+    # Generate a random 16-byte IV
+    iv = os.urandom(16)
+
+    # Create AES cipher in CBC mode
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+
+    # Pad the data to make it a multiple of the block size (16 bytes)
+    padder = PKCS7(algorithms.AES.block_size).padder()
+    padded_data = padder.update(data) + padder.finalize()
+
+    # Encrypt the data
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    # Return the IV concatenated with the ciphertext
+    return iv + ciphertext
+
+# Decrypt data using AES-256 with the provided key
+def aes_decrypt(data: bytes, key: bytes) -> bytes:
+# data - The encrypted data to decrypt
+# key - The 256-bit decryption key
+    
+    if len(data) < 16:
+        raise ValueError("Invalid data length. Data must be at least 16 bytes long.")
+
+    # Extract the IV (first 16 bytes) and ciphertext
+    iv = data[:16]
+    ciphertext = data[16:]
+
+    # Create AES cipher in CBC mode
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+
+    # Decrypt the data
+    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove padding
+    unpadder = PKCS7(algorithms.AES.block_size).unpadder()
+    plaintext = unpadder.update(padded_data) + unpadder.finalize()
+
+    return plaintext
+
+
+
+
+
 #----------------------------------
 
 
@@ -112,27 +177,20 @@ def create_backup_folder():
 
 
 # Setup logging with a rotating file handler and an encrypted log handler
-def setup_logging(fernet: Fernet):
-# fernet - The Fernet object used for encryption/decryption
+def setup_logging(key: bytes):
+# key - The encryption key used for the encrypted log handler
 
     logger = logging.getLogger()# Get the root logger
     logger.handlers.clear()  # Clear existing handlers
 
-    rotating_handler = RotatingFileHandler( # 
-        LOG_FILE, maxBytes=LOG_MAX_SIZE
-    )
-
-    rotating_handler.setLevel(logging.INFO) # Set the log level for the rotating handler
-    rotating_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")) # Set the log format
-
     # Encrypted log handler
-    encrypted_handler = EncryptedLogHandler(fernet) # Create an instance of the custom encrypted log handler
+    encrypted_handler = EncryptedLogHandler(key) # Create an instance of the custom encrypted log handler
     encrypted_handler.setLevel(logging.INFO) # Set the log level for the encrypted handler
 
     # Add handlers to the logger
-    logger.addHandler(rotating_handler) # Rotating log file
     logger.addHandler(encrypted_handler)  # Encrypted logs
     logger.setLevel(logging.INFO) # Set the log level for the logger
+
 
 
 #-----------------------------------------------------------------------
@@ -143,9 +201,9 @@ class EncryptedLogHandler(logging.Handler):
 # logging.Handler - Base class for all log handlers
 
     # Initialize the custom log handler
-    def __init__(self, fernet): # fernet - The Fernet object used for encryption/decryption
+    def __init__(self, key: bytes):
         super().__init__() # Initialize the base class
-        self.fernet = fernet # Store the Fernet object for encryption
+        self.key = key # Encryption key
         self.formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s") # Set the log format
 
     # Override the emit method to handle log messages
@@ -154,7 +212,7 @@ class EncryptedLogHandler(logging.Handler):
             
             msg = self.format(record) # Format the log message using the formatter
 
-            encrypted = self.fernet.encrypt(msg.encode()) # Encrypt the log message using Fernet
+            encrypted = aes_encrypt(msg.encode(),self.key) # Encrypt the log message using AES encryption
 
             # Write the encrypted log message to the log file
             with open(LOG_FILE, "ab") as f:
@@ -168,9 +226,9 @@ class EncryptedLogHandler(logging.Handler):
 
 
 # Decrypt and display logs from the log file
-def decrypt_logs(log_file: str, fernet: Fernet):
-    # log_file - The path to the log file
-# fernet - The Fernet object used for decryption
+def decrypt_logs(log_file: str, key: bytes):
+# log_file - The path to the log file
+# key - The encryption key used for decryption
 
     try:
         with open(log_file, "rb") as f:
@@ -178,8 +236,7 @@ def decrypt_logs(log_file: str, fernet: Fernet):
                 if not line.strip():  # Skip empty lines
                     continue
                 try:
-                    # Decrypt the log entry
-                    decrypted = fernet.decrypt(line.strip())  # Decrypt the bytes
+                    decrypted = aes_decrypt(line.strip(),key)  # Decrypt the bytes
                     decrypted_str = decrypted.decode()  # Decode the decrypted bytes to a string
 
                     # Parse the log level from the decrypted log entry
@@ -197,11 +254,9 @@ def decrypt_logs(log_file: str, fernet: Fernet):
                     # Print the log entry with the appropriate color
                     print(color + decrypted_str + Style.RESET_ALL)
 
-                # Exception handling for specific cases
-                except InvalidToken:
-                    print("")
                 except Exception as e:
                     print(Fore.RED + f"Error processing a log entry: {e}")
+
 # Exception handling for specific cases
     except FileNotFoundError:
         print(Fore.RED + f"Log file '{log_file}' not found.")
@@ -309,9 +364,9 @@ def export_keys(export_path: str, master_password: str,salt: bytes):
 
             # Export derived keys
             f.write("=== Derived Keys ===\n")
-            f.write(f"Encryption Key (Derived): {encryption_key.decode()}\n")
-            f.write(f"Salt Encryption Key (Derived): {salt_encryption_key.decode()}\n")
-            f.write(f"Log Key (Derived): {log_key.decode()}\n")
+            f.write(f"Encryption Key (Derived): {base64.urlsafe_b64encode(encryption_key).decode()}\n")
+            f.write(f"Salt Encryption Key (Derived): {base64.urlsafe_b64encode(salt_encryption_key).decode()}\n")
+            f.write(f"Log Key (Derived): {base64.urlsafe_b64encode(log_key).decode()}\n")
 
             # Export stored keys from the keyring
             f.write("\n=== Stored Keys ===\n")
@@ -464,14 +519,17 @@ def derive_key(master_password: str, salt: bytes) -> bytes:
     
     master_password += PEPPER # Combine the master password with PEPPER
     
-    # Derive a key using PBKDF2
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
+    # Derive a key using Argon2
+    derived_key = hash_secret_raw(
+        secret=master_password.encode(),
         salt=salt,
-        iterations=PBKDF2_ITERATIONS,
+        time_cost=3,  # Number of iterations
+        memory_cost=64 * 1024,  # Memory usage in kibibytes (64 MB)
+        parallelism=2,  # Number of parallel threads
+        hash_len=32,  # Length of the derived key
+        type=Type.ID  # Argon2id 
     )
-    return base64.urlsafe_b64encode(kdf.derive(master_password.encode())) # Return the derived key in URL-safe base64 format
+    return (derived_key)  # Return the derived key 
 
 
 #--------------------------------------------------
@@ -547,29 +605,21 @@ def get_salt_encryption_key(master_password: str, salt: bytes) -> bytes:
 # salt - The salt used for key derivation
 
     # Try to retrieve the key from keyring
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
-    return base64.urlsafe_b64encode(kdf.derive((master_password + "SALT_ENCRYPTION").encode()))
+    stored_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
+    if stored_key:
+        # Decode the stored key from Base64 and return it
+        return base64.urlsafe_b64decode(stored_key)
+
+    # Generate a new key if not found
+    derived_key = derive_key(master_password, salt) # Derive the key using the master password and salt
+
+    encoded_key = base64.urlsafe_b64encode(derived_key).decode() # Encode the key to a string
+    keyring.set_password(SERVICE_NAME, "salt_encryption_key", encoded_key) # Store the key in keyring
+    
+    return (derived_key)
 
 
 #----------------------------------------------------------------------------
-
-
-# Save the salt encryption key to the keyring
-def save_salt_key_to_keyring(master_password: str, salt: bytes):
-# master_password - The master password used for key derivation
-# salt - The salt used for key derivation
-
-
-    salt_key = get_salt_encryption_key(master_password, salt) # Get the salt encryption key
-    keyring.set_password(SERVICE_NAME, "salt_encryption_key", salt_key.decode()) # Store the key in keyring
-
-
-#------------------------------------------------------------------------------
 
 
 # Ensure the secure folder exists before loading the encryption key
@@ -592,19 +642,16 @@ def encrypt_salt_file(master_password: str):
     # Read the salt from the file
     with open(SALT_FILE, "rb") as f:
         plain_salt = f.read()
-    
-    # Encrypt the salt using the master password
+
+    # Retrieve the salt encryption key from the keyring
     salt_key = get_salt_encryption_key(master_password, plain_salt) # Get the salt encryption key
-    fernet = Fernet(salt_key) # Create a Fernet object for encryption
-    encrypted_salt = fernet.encrypt(plain_salt) # Encrypt the salt
-    
+
+    # Encrypt the salt
+    encrypted_salt = aes_encrypt(plain_salt, salt_key) # Encrypt the salt using the key
+
     # Write the encrypted salt back to the file
     with open(SALT_FILE, "wb") as f:
         f.write(encrypted_salt)
-    
-    # Save the salt encryption key to the keyring
-    save_salt_key_to_keyring(master_password, plain_salt)
-
 
 #-----------------------------------------------------------------------------------------
 
@@ -619,15 +666,11 @@ def decrypt_salt_file(master_password: str) -> bytes:
         encrypted_salt = f.read()
     
     # # Get the salt encryption key from the keyring
-    salt_key = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
-    if not salt_key:
-        raise ValueError("Salt encryption key not found in keyring!")
-        logging.WARNING("Salt encryption key not found in keyring!")
-    
-    # Decrypt the salt using the key from the keyring
-    fernet = Fernet(salt_key.encode())
-    return fernet.decrypt(encrypted_salt)
+    salt_key = get_salt_encryption_key(master_password, encrypted_salt) # Get the salt encryption key
 
+
+    # Decrypt the salt file
+    return aes_decrypt(encrypted_salt, salt_key) 
 
 #-------------------------------------------------
 
@@ -686,19 +729,18 @@ def init_vault():
     # Derive the vault key
     decrypted_salt = decrypt_salt_file(master_pwd)
     vault_key = derive_key(master_pwd, decrypted_salt)
-    fernet = Fernet(vault_key)
 
     
     # Save the vault key to the keyring
-    save_vault(fernet, [])
+    save_vault(vault_key, [])
 
 
 #----------------------------------------------
 
 
 # Load the vault from the file
-def load_vault(fernet: Fernet) -> list:
-# fernet - The Fernet object used for decryption
+def load_vault(key: bytes) -> list:
+# key - The encryption key used to decrypt the vault
 
     # Check if the vault file exists
     if not os.path.exists(VAULT_FILE):
@@ -710,13 +752,10 @@ def load_vault(fernet: Fernet) -> list:
             data = f.read()
 
         # Decrypt the vault data
-        decrypted = fernet.decrypt(data)
+        decrypted = aes_decrypt(data,key)
         return json.loads(decrypted)
 
     ## Exception handling for specific cases
-    except InvalidToken:
-        logging.warning("Invalid master password. Decryption failed.")
-        raise ValueError("Invalid master password. Decryption failed.")
     except json.JSONDecodeError:
         logging.WARNING("Corrupted vault. Unable to parse JSON.")
         raise ValueError("Corrupted vault. Unable to parse JSON.")
@@ -728,16 +767,19 @@ def load_vault(fernet: Fernet) -> list:
         raise RuntimeError(f"Unexpected error loading the vault: {e}")
     
 
-        
+#-------------------------------------------------
+
+
 # Save the chyphered vault to the file
-def save_vault(fernet: Fernet, vault: list):
-# fernet - The Fernet object used for encryption
+def save_vault(key: bytes, vault: list):
+# key - The encryption key used to encrypt the vault
+# vault - The list of entries in the vault
     
     secure_file(VAULT_FILE, grant_access=True)  # Temporarily grant permissions
     try:
         # Encrypt the vault data
         data = json.dumps(vault).encode()
-        encrypted = fernet.encrypt(data)
+        encrypted = aes_encrypt(data,key)
         with open(VAULT_FILE, "wb") as f:
             f.write(encrypted)
 
@@ -1061,9 +1103,9 @@ def export_vault():
 
 
 # Menu search logs to a file
-def search_logs_menu(log_file: str, fernet: Fernet):
+def search_logs_menu(log_file: str, key: bytes):
 # log_file - The path to the log file
-# fernet - The Fernet object used for decryption
+# key - The encryption key used for decryption
 
     while True:  # Loop until valid input is provided
         try:
@@ -1114,7 +1156,7 @@ def search_logs_menu(log_file: str, fernet: Fernet):
                     if not line.strip():  # Skip empty lines
                         continue
                     try:
-                        decrypted = fernet.decrypt(line.strip()).decode()
+                        decrypted = aes_decrypt(line.strip(),key).decode()
 
                         # Apply filters
                         if date_filter and date_filter not in decrypted.split(" ")[0]:
@@ -1126,10 +1168,11 @@ def search_logs_menu(log_file: str, fernet: Fernet):
 
                         # Print the matching log entry
                         print(decrypted)
-                    except InvalidToken:
-                        print("")()
+ 
                     except Exception as e:
                         print(Fore.RED + f"Error processing a log entry: {e}")
+ 
+        # Exception handling for specific cases
         except Exception as NoneTypeError:
             print(Fore.RED + "No log has been found.")
         except Exception as e:
@@ -1141,9 +1184,9 @@ def search_logs_menu(log_file: str, fernet: Fernet):
 
 
 # Decrypt and display logs from the log file
-def export_logs(log_file: str, fernet: Fernet):
+def export_logs(log_file: str, key: bytes):
 # log_file - The path to the log file
-# fernet - The Fernet object used for decryption
+# key - The encryption key used for decryption
 
     try:
         # Ask the user for the export path
@@ -1156,15 +1199,14 @@ def export_logs(log_file: str, fernet: Fernet):
                 if not line.strip():  # Skip empty lines
                     continue
                 try:
-                    decrypted = fernet.decrypt(line.strip()).decode()
+                    decrypted = aes_decrypt(line.strip(),key).decode()
                     export_file.write(decrypted + "\n")
 
-                # Exception handling for specific cases
-                except InvalidToken:
-                    export_file.write("")
                 except Exception as e:
                     export_file.write(f"Error processing a log entry: {e}\n")
+
         print(Fore.GREEN + f"Logs exported successfully to {export_path}")
+
     except Exception as e:
         print(Fore.RED + f"Error exporting logs: {e}")
         logging.error(f"Error exporting logs: {e}")
@@ -1175,9 +1217,9 @@ def export_logs(log_file: str, fernet: Fernet):
 
 
 # Menu for log options
-def log_view_menu(log_file: str, fernet: Fernet):
+def log_view_menu(log_file: str, key: bytes):
 # log_file - The path to the log file
-# fernet - The Fernet object used for decryption
+# key - The encryption key used for decryption
 
     while True:
         check_and_reset_timer()  # Enforce timeout globally
@@ -1196,15 +1238,15 @@ def log_view_menu(log_file: str, fernet: Fernet):
             clear_screen()
             show_title()
             print("\nALL LOGS:\n")
-            decrypt_logs(log_file, fernet)
+            decrypt_logs(log_file, key)
         elif choice == "2":
             # Search logs by filter
-            search_logs_menu(log_file, fernet)
+            search_logs_menu(log_file, key)
         elif choice == "3":
             # Export logs to a file
             clear_screen()
             show_title()
-            export_logs(log_file, fernet)
+            export_logs(log_file, key)
         elif choice == "0":
             break
 
@@ -1213,10 +1255,10 @@ def log_view_menu(log_file: str, fernet: Fernet):
 
 
 # Menu for advanced options
-def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet, master_pwd: str,salt: bytes):
-# vault - The list of entries in the vault
-# fernet - The Fernet object used for encryption
-# log_fernet - The Fernet object used for logging
+def advanced_options (log_key: bytes, master_pwd: str,salt: bytes):
+# log_key - The encryption key used for logging
+# master_pwd - The master password used for key derivation
+# salt - The salt used for key derivation
 
     while True:
         check_and_reset_timer()  # Enforce timeout globally
@@ -1233,7 +1275,7 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet, master_pwd
         if choice == "1":
             export_keys(input("Enter the path to export the keys (e.g., backup_keys.txt): ").strip(),master_pwd,salt)
         elif choice == "2":
-            log_view_menu(LOG_FILE, log_fernet)
+            log_view_menu(LOG_FILE, log_key)
         elif choice == "3":
             export_vault()
         elif choice == "0":
@@ -1244,9 +1286,9 @@ def advanced_options(vault: list, fernet: Fernet, log_fernet: Fernet, master_pwd
 
 
 # Manage entries in the vault
-def manage_entries(vault: list, fernet: Fernet):
+def manage_entries(vault: list, vault_key: bytes):
 # vault - The list of entries in the vault
-# fernet - The Fernet object used for encryption
+# vault_key - The encryption key used to encrypt the vault
 
     while True:
         check_and_reset_timer()  # Enforce timeout globally
@@ -1269,10 +1311,10 @@ def manage_entries(vault: list, fernet: Fernet):
             show_entries(vault, copy_enabled=True)
         elif choice == "3":
             edit_entry(vault)
-            save_vault(fernet, vault)
+            save_vault(vault_key, vault)
         elif choice == "4":
             delete_entry(vault)
-            save_vault(fernet, vault)
+            save_vault(vault_key, vault)
         elif choice == "5":
             auto_login(vault)
         elif choice == "6":
@@ -1389,20 +1431,19 @@ def main():
         # Step 2: Derive the vault key
         progress_bar.set_description(steps[1])
         vault_key = derive_key(master_pwd, decrypted_salt)
-        fernet = Fernet(vault_key)
         progress_bar.update(1)
 
         # Step 3: Set up encrypted logging
         progress_bar.set_description(steps[2])
-        log_fernet = Fernet(derive_key(master_pwd + "LOGS", decrypted_salt))
-        setup_logging(log_fernet)
+        log_key = derive_key(master_pwd + "LOGS", decrypted_salt)
+        setup_logging(log_key)
         logging.info("Session started.")
         log_user_info()
         progress_bar.update(1)
 
         # Step 4: Load the vault
         progress_bar.set_description(steps[3])
-        vault = load_vault(fernet)
+        vault = load_vault(vault_key)
         progress_bar.update(1)
 
     except ValueError as ve:
@@ -1440,11 +1481,11 @@ def main():
 
             if choice == "1":
                 add_entry(vault)
-                save_vault(fernet, vault)
+                save_vault(vault_key, vault)
             elif choice == "2":
-                manage_entries(vault, fernet)
+                manage_entries(vault, vault_key)
             elif choice == "3":
-                advanced_options(vault, fernet, log_fernet,master_pwd,decrypted_salt)
+                advanced_options(log_key,master_pwd,decrypted_salt)
             elif choice == "0":
                 logging.info("User logged out.")
                 break
