@@ -43,6 +43,9 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.backends import default_backend
 
 
+import pyotp
+import qrcode
+
 
 
 # Initialize colorama to automatically reset text color/style after each print
@@ -323,6 +326,106 @@ def log_user_info():
     hostname = socket.gethostname()
     ip_address = socket.gethostbyname(hostname)
     logging.info(f"User: {username}, Hostname: {hostname}, IP: {ip_address}")
+
+
+#--------------------------------------------------
+
+# Setup 2FA using TOTP
+def setup_2fa(master_password: str, salt: bytes):
+
+    secret_key= pyotp.random_base32()  # Generate a random base32 secret key
+
+    # Load the username
+    username = "User"
+    try:
+        with open(os.path.join(SECURE_FOLDER, "username.txt"), "r") as f:
+            username = f.read().strip()
+    except FileNotFoundError:
+        logging.warning("Username file not found. Defaulting to 'User'.")
+
+
+    # Generate a QR code for the TOTP secret key
+    totp = pyotp.TOTP(secret_key)
+    qr_code_url = totp.provisioning_uri(name="PasswordManager", issuer_name=f"{username}")  # Generate the provisioning URI for the QR code
+
+    # Display the QR code
+    print(Fore.MAGENTA + "\nScan the QR code with your authenticator app:\n")
+    qr = qrcode.QRCode()
+    qr.add_data(qr_code_url)
+    qr.make(fit=True)
+
+    # Print the QR code in ASCII format
+    qr.print_ascii()
+
+    print("\nOr manually enter this key in your authenticator app: " + f"{secret_key}")
+
+    print(Fore.RED + "\n!! This is the only opportunity to get the code. If you don't do it now, it will be lost forever.")
+    input("\nPress Enter to continue...")  # Wait for user input
+
+    
+    # Encrypt the secret key
+    encryption_key = derive_key(master_password, salt)
+    encrypted_secret_key = aes_encrypt(secret_key.encode(), encryption_key)
+
+    # Save the encrypted secret key to the file
+    with open(FILE_2FA, "wb") as f:
+        f.write(encrypted_secret_key)
+    
+    print(Fore.GREEN + "\n2FA setup complete.")   
+
+
+#--------------------------------------------------
+
+
+# Verify the 2FA code
+def verify_2fa_code(master_password: str, salt: bytes) -> bool:
+
+    try:
+
+         # Check if the 2FA secret file exists
+ 
+        if not os.path.exists(FILE_2FA):
+            print(Fore.RED + "2FA secret key file not found. Please set up 2FA first.")
+            logging.error("2FA secret key file not found.")
+            return False
+
+        # Load the secret key from the file
+        with open(FILE_2FA, "rb") as f:
+            encrypted_secret_key = f.read().strip()
+
+        # Decrypt the secret key
+        decryption_key = derive_key(master_password, salt)
+        secret_key = aes_decrypt(encrypted_secret_key, decryption_key).decode()
+
+
+        # Prompt the user for the 2FA code
+        totp = pyotp.TOTP(secret_key)
+        for attempt in range(1, 4): # Allow 3 attempts
+            user_code = get_valid_input("Enter the 2FA code: ", allow_empty=False)
+
+            # Verify the 2FA code
+            if totp.verify(user_code):
+                print(Fore.GREEN + "2FA code verified successfully.")
+                logging.info("2FA code verified successfully.")
+                return True
+            else:
+                print(Fore.RED + "Invalid 2FA code. please try again.")
+                logging.warning("Invalid 2FA code.")
+
+        # If all attempts fail
+        print(Fore.RED + "2FA verification failed. Please try again later.")
+        logging.error("2FA verification failed after 3 attempts.")
+        return False
+        
+    except FileNotFoundError:
+        print(Fore.RED + "2FA secret key file not found. Please set up 2FA first.")
+        logging.error("2FA secret key file not found.")
+        return False
+    except Exception as e:
+        print(Fore.RED + f"Error verifying 2FA code: {e}")
+        logging.error(f"Error verifying 2FA code: {e}")
+        return False
+
 
 
 #--------------------------------------------------
@@ -713,18 +816,26 @@ def compute_file_hash(file_path: str) -> str:
 def init_vault():
 
     # Check if the vault and salt files already exist
-    if os.path.exists(SALT_FILE) and os.path.exists(VAULT_FILE):
-        return False  # Vault and Salt already initialized
+    if os.path.exists(SALT_FILE) and os.path.exists(VAULT_FILE) and os.path.exists(FILE_2FA):
+        return False  # Vault, Salt and 2FA already initialized
 
-    ## Create the secure folder if it doesn't exist
+    
     clear_screen() 
     show_title()
-    print(Fore.MAGENTA + Style.BRIGHT +"\n CREATING PASSWORD MANAGER \n\n")
-    master_pwd = getpass.getpass("Set a master password: ")
+    print(Fore.MAGENTA + Style.BRIGHT +"\nCREATING PASSWORD MANAGER \n\n")
+
+    # prompt for the user's username
+    username = get_valid_input("Enter your username: ", allow_empty=False)
+    with open(os.path.join(SECURE_FOLDER,"username.txt"), "w") as f:
+        f.write(username)
+    
+    # Prompt the user for a master password
+    master_pwd = getpass.getpass("\nSet a master password: ")
     confirm_pwd = getpass.getpass("\nConfirm the master password: ")
     if master_pwd != confirm_pwd:
         print(Fore.RED + "Passwords don't match.")
         exit(1)
+
 
     # Generate a random salt and save it to the file
     salt = os.urandom(16)
@@ -735,14 +846,15 @@ def init_vault():
     # Encrypt the salt file
     encrypt_salt_file(master_pwd)
 
+
     # Derive the vault key
     decrypted_salt = decrypt_salt_file(master_pwd)
     vault_key = derive_key(master_pwd, decrypted_salt)
-
     
     # Save the vault key to the keyring
     save_vault(vault_key, [])
 
+    setup_2fa(master_pwd, decrypted_salt)  # Setup 2FA
 
 #----------------------------------------------
 
@@ -1410,12 +1522,27 @@ def main():
     # Initialize the vault
     init_vault()
 
+
+    # Load the username
+    username = "User"
+    try:
+        with open(os.path.join(SECURE_FOLDER, "username.txt"), "r") as f:
+            username = f.read().strip()
+    except FileNotFoundError:
+        logging.warning("Username file not found. Defaulting to 'User'.")
+
+
     # Ask for master password
     clear_screen()
     show_title()
     print(Fore.MAGENTA + Style.BRIGHT + "\nWELCOME BACK\n\n")
     master_pwd = getpass.getpass("Enter the master password: ")
     
+
+    if not verify_2fa_code(master_pwd, decrypt_salt_file(master_pwd)):
+        print(Fore.RED + "2FA verification failed.")
+        logging.error("2FA verification failed.")
+        exit(1)
 
 
     # Setting up the progress bar
@@ -1480,7 +1607,7 @@ def main():
             clear_screen()
             show_title()
 
-            print(Fore.MAGENTA + Style.BRIGHT +"\nMAIN MENU\n")
+            print(Fore.MAGENTA + Style.BRIGHT +"\nMAIN MENU                                Hi "+f"{username}\n")
             print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " Add an account")
             print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Manage accounts")
             print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Advanced options")
