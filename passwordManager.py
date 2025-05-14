@@ -59,13 +59,6 @@ last_action = time.time()
 #--------------------------------------------------
 
 
-# Basic configuration for logging
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
 #----------------------------------
 
 # Use to get a valid input from the user
@@ -163,6 +156,11 @@ def create_secure_folder():
             print(Fore.RED + f"Hiding folder failed: {e}")
             logging.info(f"Failed to hide folder: {e}")
 
+    # Ensure the security subdirectory exists
+    security_folder = os.path.join(SECURE_FOLDER, "security")
+    if not os.path.exists(security_folder):
+        os.makedirs(security_folder)
+
 
 #------------------------------------------------------------
 
@@ -174,6 +172,17 @@ def create_backup_folder():
 
 
 #------------------------------------------------
+
+create_backup_folder() # Create the backup folder for logs
+
+# Basic configuration for logging
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
 
 
 # Setup logging with a rotating file handler and an encrypted log handler
@@ -1397,7 +1406,6 @@ def main():
 
     # Ensure the secure folder exists
     create_secure_folder()
-    create_backup_folder()
 
     # Initialize the vault
     init_vault()

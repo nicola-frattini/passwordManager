@@ -3,15 +3,15 @@ import os
 
 # PATH FILE NAMES AND DIRECTORIES
 
-SECURE_FOLDER = "secure_vault"
+SECURE_FOLDER = os.path.join(os.getenv("LOCALAPPDATA", os.path.expanduser("~\\Appdata\\Local")), "PasswordManager")
 
-VAULT_FILE = os.path.join(SECURE_FOLDER, "vault.enc")
+VAULT_FILE = os.path.join(SECURE_FOLDER,"security","vault.enc")
 
-SALT_FILE = os.path.join(SECURE_FOLDER, "salt.bin")
+SALT_FILE = os.path.join(SECURE_FOLDER, "security","salt.bin")
 
-LOG_FILE = "password_manager.log"
+LOG_FILE = os.path.join(SECURE_FOLDER, "logs","app.log")
 
-LOG_BACKUP_FOLDER = "log_backups"
+LOG_BACKUP_FOLDER = os.path.join(SECURE_FOLDER, "logs","backup")
 
 
 #  ServiceS name for keyring
