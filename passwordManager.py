@@ -46,10 +46,16 @@ from cryptography.hazmat.backends import default_backend
 import pyotp
 import qrcode
 
+import gc
+ 
+
+import sqlite3
+
 
 
 # Initialize colorama to automatically reset text color/style after each print
 init(autoreset=True)
+
 
 
 #-------------------------------------------------
@@ -60,6 +66,67 @@ last_action = time.time()
 
 
 #--------------------------------------------------
+
+def init_sqlite_vault():
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vault (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site TEXT NOT NULL,
+            username TEXT NOT NULL,
+            password BLOB NOT NULL,
+            url TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def load_vault_sqlite(key: bytes) -> list:
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, site, username, password, url FROM vault")
+        rows = cursor.fetchall()
+        vault = []
+        for row in rows:
+            try:
+                decrypted_pwd = aes_decrypt(row[3], key).decode()
+            except Exception as e:
+                decrypted_pwd = "<decryption error>"
+                logging.error(f"Error decrypting password for {row[1]}: {e}")
+            vault.append({
+                "id": row[0],
+                "site": row[1],
+                "username": row[2],
+                "password": decrypted_pwd,
+                "url": row[4]
+            })
+        return vault
+    except Exception as e:
+        print(Fore.RED + f"Error loading vault: {e}")
+        logging.error(f"Error loading vault: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def encrypt_db_file(key: bytes):
+    with open(VAULT_FILE, "rb") as f:
+        data = f.read()
+    encrypted = aes_encrypt(data, key)
+    with open(VAULT_FILE, "wb") as f:
+        f.write(encrypted)
+
+
+def decrypt_db_file(key: bytes):
+    with open(VAULT_FILE, "rb") as f:
+        encrypted = f.read()
+    data = aes_decrypt(encrypted, key)
+    with open(VAULT_FILE, "wb") as f:
+        f.write(data)
+
 
 
 #----------------------------------
@@ -322,10 +389,16 @@ def backup_logs():
 # Log user information
 def log_user_info():
 
+    try:
+        with open(USERNAME_FILE, "r") as f:
+            account = f.read().strip()  # Read the account name from the file
+    except Exception as e:
+        account = "Unknown"  # Default to "Unknown" if the file is not found
+
     username = os.getlogin()
     hostname = socket.gethostname()
     ip_address = socket.gethostbyname(hostname)
-    logging.info(f"User: {username}, Hostname: {hostname}, IP: {ip_address}")
+    logging.info(f"Account: {account} User: {username}, Hostname: {hostname}, IP: {ip_address}")
 
 
 #--------------------------------------------------
@@ -338,7 +411,7 @@ def setup_2fa(master_password: str, salt: bytes):
     # Load the username
     username = "User"
     try:
-        with open(os.path.join(SECURE_FOLDER, "username.txt"), "r") as f:
+        with open(USERNAME_FILE, "r") as f:
             username = f.read().strip()
     except FileNotFoundError:
         logging.warning("Username file not found. Defaulting to 'User'.")
@@ -408,6 +481,7 @@ def verify_2fa_code(master_password: str, salt: bytes) -> bool:
                 print(Fore.GREEN + "2FA code verified successfully.")
                 logging.info("2FA code verified successfully.")
                 return True
+
             else:
                 print(Fore.RED + "Invalid 2FA code. please try again.")
                 logging.warning("Invalid 2FA code.")
@@ -553,8 +627,9 @@ def check_password_hibp(password: str) -> int:
 
 
 # Check if the password has been compromised using HIBP API for all passwords in the vault
-def check_vault_passwords(vault: list):
+def check_vault_passwords(vault: list,vault_key: bytes):
 # vault - The list of entries in the vault
+# vault_key - The encryption key used to encrypt the vault
 
     logging.info("Checking passwords in the vault...")
     if not vault:
@@ -572,9 +647,12 @@ def check_vault_passwords(vault: list):
     # Loop through each entry in the vault and check the password
     with tqdm.tqdm(vault, desc="Checking passwords", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}") as progress_bar:
         for entry in progress_bar:
-            site = entry['site']
             password = entry['password']
             if check_password_hibp(password) != 0:
+                try:
+                    site = aes_decrypt(entry['site'], vault_key).decode()
+                except Exception:
+                    site = "<decryption error>"
                 results.append((site, Fore.RED + f"WARNING: The password for {site} has been compromised! Change it immediately."))
                 logging.warning(f"Password for {site} has been compromised!")
         
@@ -816,8 +894,8 @@ def compute_file_hash(file_path: str) -> str:
 def init_vault():
 
     # Check if the vault and salt files already exist
-    if os.path.exists(SALT_FILE) and os.path.exists(VAULT_FILE) and os.path.exists(FILE_2FA):
-        return False  # Vault, Salt and 2FA already initialized
+    if os.path.exists(SALT_FILE)  and os.path.exists(FILE_2FA) and os.path.exists(VAULT_FILE):
+        return False  # Salt Vault and 2FA already initialized
 
     
     clear_screen() 
@@ -826,7 +904,7 @@ def init_vault():
 
     # prompt for the user's username
     username = get_valid_input("Enter your username: ", allow_empty=False)
-    with open(os.path.join(SECURE_FOLDER,"username.txt"), "w") as f:
+    with open(USERNAME_FILE, "w") as f:
         f.write(username)
     
     # Prompt the user for a master password
@@ -851,152 +929,92 @@ def init_vault():
     decrypted_salt = decrypt_salt_file(master_pwd)
     vault_key = derive_key(master_pwd, decrypted_salt)
     
-    # Save the vault key to the keyring
-    save_vault(vault_key, [])
+    init_sqlite_vault()
+
+    encrypt_db_file(vault_key)  # Encrypt the vault file
 
     setup_2fa(master_pwd, decrypted_salt)  # Setup 2FA
 
-#----------------------------------------------
-
-
-# Load the vault from the file
-def load_vault(key: bytes) -> list:
-# key - The encryption key used to decrypt the vault
-
-    # Check if the vault file exists
-    if not os.path.exists(VAULT_FILE):
-        return []
-
-    try:
-        # Read the encrypted vault data from the file
-        with open(VAULT_FILE, "rb") as f:
-            data = f.read()
-
-        # Decrypt the vault data
-        decrypted = aes_decrypt(data,key)
-        return json.loads(decrypted)
-
-    ## Exception handling for specific cases
-    except json.JSONDecodeError:
-        logging.WARNING("Corrupted vault. Unable to parse JSON.")
-        raise ValueError("Corrupted vault. Unable to parse JSON.")
-    except FileNotFoundError:
-        logging.warning("Vault file not found.")
-        return []  # Return an empty list if the file doesn't exist
-    except Exception as e:
-        logging.warning(f"Unexpected error loading the vault: {e}")
-        raise RuntimeError(f"Unexpected error loading the vault: {e}")
-    
-
-#-------------------------------------------------
-
-
-# Save the chyphered vault to the file
-def save_vault(key: bytes, vault: list):
-# key - The encryption key used to encrypt the vault
-# vault - The list of entries in the vault
-    
-    secure_file(VAULT_FILE, grant_access=True)  # Temporarily grant permissions
-    try:
-        # Encrypt the vault data
-        data = json.dumps(vault).encode()
-        encrypted = aes_encrypt(data,key)
-        with open(VAULT_FILE, "wb") as f:
-            f.write(encrypted)
-
-        secure_file(VAULT_FILE, grant_access=False)  # Revoke permissions
-
-        # Compute and display the hash of the saved file
-        file_hash = compute_file_hash(VAULT_FILE)
-        if file_hash:
-            logging.info(f"Vault saved successfully. File hash: {file_hash}")
-
-    # Exception handling
-    except FileNotFoundError:
-        print(Fore.RED + "Vault file not found. Unable to save.")
-        logging.warning("Vault file not found. Unable to save.")
-        exit(1)
-    except PermissionError:
-        print(Fore.RED + "Permission denied. Unable to save the vault.")
-        logging.warning("Permission denied. Unable to save the vault.")
-        exit(1)
-    except Exception as e:
-        print(Fore.RED + f"Unexpected error saving the vault: {e}")
-        logging.warning(f"Unexpected error saving the vault: {e}") 
-        exit(1)
 
 
 #-------------------------------------------------
 
 
 # Add a new item
-def add_entry(vault: list):
-# vault - The list of entries in the vault
+def add_entry(vault_key: bytes):
+# vault_key - The encryption key used to encrypt the vault
 
-    while True:  # Loop until valid input is provided
+    while True:
         clear_screen()
         show_title()
         print(Fore.MAGENTA + Style.BRIGHT +"\nADD A NEW ACCOUNT\n")
-        check_and_reset_timer()  # Enforce timeout globally
+        check_and_reset_timer()
 
         try:
-            # Get user input for site, username, URL, and password
             site = get_valid_input("Site (or leave blank to cancel): ", allow_empty=True)
             if not site:
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
-                return 
+                time.sleep(2)
+                return
 
             user = get_valid_input("Username (or leave blank to cancel): ", allow_empty=True)
             if not user:
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
-                return  #
+                time.sleep(2)
+                return
 
             url = get_valid_input("URL (or leave blank to cancel): ", allow_empty=True)
             if not url:
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
+                time.sleep(2)
                 return
 
-            # Ask for password input method
             print("\n[1] Set manually a password\n[2] Generate a secure password\n\n[0] Cancel")
             choice = get_valid_input("> ", valid_options=["0", "1", "2"])
 
             if choice == "0":
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
+                time.sleep(2)
                 return
             elif choice == "1":
                 pwd = getpass.getpass("Password (or leave blank to cancel): ").strip()
                 if not pwd:
                     print(Fore.RED + "cancelled...")
-                    time.sleep(2)  # Add delay for cancellation
+                    time.sleep(2)
                     return
             elif choice == "2":
                 length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
                 if not length:
                     print(Fore.RED + "cancelled...")
-                    time.sleep(2)  # Add delay for cancellation
-                    return 
-                
+                    time.sleep(2)
+                    return
                 length = int(length) if length.isdigit() else 24
-                # Check if the user wants to include special characters
                 include_special_chars = get_valid_input("Include special characters? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
                 if not include_special_chars:
                     print(Fore.RED + "cancelled...")
-                    time.sleep(2)  # Add delay for cancellation
-                    return 
+                    time.sleep(2)
+                    return
                 pwd = generate_password(length, include_special_chars == "y")
                 print(Fore.GREEN + f"Password generated: {pwd}")
 
-            # Add the entry to the vault
-            vault.append({"site": site, "username": user, "password": pwd, "url": url})
+            # Encrypt all fields before storing
+            conn = sqlite3.connect(VAULT_FILE)
+            cursor = conn.cursor()
+            encrypted_site = aes_encrypt(site.encode(), vault_key)
+            encrypted_user = aes_encrypt(user.encode(), vault_key)
+            encrypted_pwd = aes_encrypt(pwd.encode(), vault_key)
+            encrypted_url = aes_encrypt(url.encode(), vault_key)
+            cursor.execute(
+                "INSERT INTO vault (site, username, password, url) VALUES (?, ?, ?, ?)",
+                (encrypted_site, encrypted_user, encrypted_pwd, encrypted_url)
+            )
+            conn.commit()
+            conn.close()
+
             print(Fore.GREEN + "Credentials entered correctly.")
             logging.info(Fore.GREEN + f"Added new entry for site: {site}, url: {url}")
-            break  # Exit the loop after successful entry
+            break
 
-        # Exception handling for specific cases
         except ValueError:
             print(Fore.RED + "Invalid input. Please try again.")
             logging.error("ValueError occurred while adding an entry.")
@@ -1006,191 +1024,216 @@ def add_entry(vault: list):
 
     input("\nPress Enter to return to the menu...")
 
-
 #-------------------------------------------------
 
 
 # Delete an entry
-def delete_entry(vault: list):
-# vault - The list of entries in the vault
+def delete_entry(vault_key: bytes):
+# vault_key - The encryption key used to encrypt the vault
 
-    while True:  # Loop until valid input is provided
-        check_and_reset_timer() 
-        show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
-        if not vault:
-            return
+    
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    rows = cursor.fetchall()
 
+    if not rows:
+        print(Fore.RED + "The vault is empty.")
+        conn.close()
+        input(Fore.WHITE + "\nPress Enter to return to the menu...")
+        return
+
+    show_entries(vault_key, copy_enabled=False, justView_enabled=False)
+
+    while True:
         try:
-            
-            # Get the index of the entry to delete
             idx = get_valid_input("ID to delete (or leave blank to cancel): ", allow_empty=True)
             if not idx:
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
-                return  # Return to the menu
-            idx = int(idx) - 1
-            if 0 <= idx < len(vault):
-                # Confirm deletion
-                confirm = get_valid_input(Fore.RED + f"Do you confirm the deletion of {vault[idx]['site']}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
-                if not confirm or confirm == "n":
-                    print(Fore.RED + "cancelled...")
-                    time.sleep(2)  # Add delay for cancellation
-                    return  # Return to the menu
-                elif confirm == "y":
-                    deleted_entry = vault[idx]
-                    del vault[idx]
-                    logging.info(Fore.GREEN + f"Deleted entry for site: {deleted_entry['site']}, username: {deleted_entry['username']}")
-                    print(Fore.GREEN + "Entry deleted.")
-                    break  # Exit the loop after successful deletion
-                else:
-                    print(Fore.RED + "Invalid option. Please try again.")
-            else:
-                print(Fore.RED + "Invalid index. Please try again.")
+                time.sleep(2)
+                return
+            idx = int(idx)
+            cursor.execute("SELECT id, site FROM vault WHERE id=?", (idx,))
+            entry = cursor.fetchone()
+            if not entry:
+                print(Fore.RED + "Invalid ID. Please try again.")
+                continue  # Ask again
+            confirm = get_valid_input(Fore.RED + f"Do you confirm the deletion of {entry[1]}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
+            if not confirm or confirm == "n":
+                print(Fore.RED + "cancelled...")
+                time.sleep(2)
+                conn.close()
+                return
+            elif confirm == "y":
+                cursor.execute("DELETE FROM vault WHERE id=?", (idx,))
+                conn.commit()
+                print(Fore.GREEN + "Entry deleted.")
         except ValueError:
             print(Fore.RED + "Invalid input. Please enter a valid number.")
+        finally:
+            conn.close()
 
 
 #-------------------------------------------------
 
 
 # Edit an entry
-def edit_entry(vault: list):
-# vault - The list of entries in the vault
+def edit_entry(vault_key: bytes):
+# vault_key - The encryption key used to encrypt the vault
 
-    while True:  # Loop until valid input is provided
-        check_and_reset_timer()  # Enforce timeout globally
+    # Check if the vault is empty
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    rows = cursor.fetchall()
 
-        show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
-        if not vault:
-            return
+    if not rows:
+        print(Fore.RED + "The vault is empty.")
+        conn.close()
+        input(Fore.WHITE + "\nPress Enter to return to the menu...")
+        return
 
-        try:
-            # Get the index of the entry to edit
-            idx = get_valid_input("Enter the account index to edit (leave blank to cancel): ", allow_empty=True)
+    show_entries(vault_key, copy_enabled=False, justView_enabled=False)
+
+    try:
+        while True:
+            idx = get_valid_input("Enter the account ID to edit (leave blank to cancel): ", allow_empty=True)
             if not idx:
                 print(Fore.RED + "cancelled...")
-                time.sleep(2)  # Add delay for cancellation
-                return
-            idx = int(idx) - 1
+                time.sleep(2)
+                break
+            try:
+                idx = int(idx)
+            except ValueError:
+                print("Invalid input. Please enter a valid number.")
+                continue
+            cursor.execute("SELECT id, site, username, password, url FROM vault WHERE id=?", (idx,))
+            entry = cursor.fetchone()
+            if not entry:
+                print(Fore.RED + "Invalid ID. Please try again.")
+                continue  # Ask again
 
-            if 0 <= idx < len(vault):
-                entry = vault[idx]
-                original_entry = entry.copy()  # Keep a copy of the original entry for logging
-                print(f"Editing {entry['site']}")
+            try:
+                decrypted_site = aes_decrypt(entry[1], vault_key).decode()
+                decrypted_user = aes_decrypt(entry[2], vault_key).decode()
+                decrypted_pwd = aes_decrypt(entry[3], vault_key).decode()
+                decrypted_url = aes_decrypt(entry[4], vault_key).decode()
+            except Exception:
+                print(Fore.RED + "Could not decrypt one or more fields for this entry.")
+                continue
 
-                # Get new values for username, URL, and password
-                new_user = get_valid_input(f"New username (leave blank to keep '{entry['username']}'): ", allow_empty=True)
-                new_url = get_valid_input(f"New URL (leave blank to keep '{entry['url']}'): ", allow_empty=True)
+            print(f"Editing {decrypted_site}")
+            new_user = get_valid_input(f"New username (leave blank to keep '{decrypted_user}'): ", allow_empty=True)
+            new_url = get_valid_input(f"New URL (leave blank to keep '{decrypted_url}'): ", allow_empty=True)
+            print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password\n[0] Cancel")
+            choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
-                # Ask for password input method
-                print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password\n[0] Cancel")
-                choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
-
-                new_pwd = None
-                if choice == "0":
+            new_pwd = None
+            if choice == "0":
+                print(Fore.RED + "cancelled...")
+                time.sleep(2)
+                break
+            elif choice == "2":
+                new_pwd = getpass.getpass("New password (or leave blank to cancel): ").strip()
+                if not new_pwd:
                     print(Fore.RED + "cancelled...")
-                    time.sleep(2)  # Add delay for cancellation
-                    return  # Return to the menu
-                elif choice == "2":
-                    new_pwd = getpass.getpass("New password (or leave blank to cancel): ").strip()
-                    if not new_pwd:
-                        print(Fore.RED + "cancelled...")
-                        time.sleep(2)  # Add delay for cancellation
-                        return  # Return to the menu
-                elif choice == "3":
-                    length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
-                    if not length:
-                        print(Fore.RED + "cancelled...")
-                        time.sleep(2)  # Add delay for cancellation
-                        return  # Return to the menu
-                    length = int(length) if length.isdigit() else 24
-                    new_pwd = generate_password(length)
-                    print(f"Generated password: {new_pwd}")
+                    time.sleep(2)
+                    break
+            elif choice == "3":
+                length = get_valid_input("Password length (default 24, or leave blank to cancel): ", allow_empty=True)
+                if not length:
+                    print(Fore.RED + "cancelled...")
+                    time.sleep(2)
+                    break
+                length = int(length) if length.isdigit() else 24
+                new_pwd = generate_password(length)
+                print(f"Generated password: {new_pwd}")
 
-                # Update the entry with new values
-                if new_user:
-                    entry['username'] = new_user
-                if new_url:
-                    entry['url'] = new_url
-                if new_pwd:
-                    entry['password'] = new_pwd
-
-                # Log the changes
-                changes = []
-                if new_user and new_user != original_entry['username']:
-                    changes.append(f"Username changed from '{original_entry['username']}' to '{new_user}'")
-                if new_url and new_url != original_entry['url']:
-                    changes.append(f"URL changed from '{original_entry['url']}' to '{new_url}'")
-                if new_pwd:
-                    changes.append("Password was modified (not logged for security)")
-
-                logging.info(f"Edited entry for site: {entry['site']}. Changes: {', '.join(changes)}")
-                print(Fore.GREEN + "Account updated.")
-                break  # Exit the loop after successful edit
-            else:
-                print(Fore.RED + "Invalid index. Please try again.")
-        except ValueError:
-            print("Invalid input. Please enter a valid number.")
+            if new_user:
+                encrypted_user = aes_encrypt(new_user.encode(), vault_key)
+                cursor.execute("UPDATE vault SET username=? WHERE id=?", (encrypted_user, idx))
+            if new_url:
+                encrypted_url = aes_encrypt(new_url.encode(), vault_key)
+                cursor.execute("UPDATE vault SET url=? WHERE id=?", (encrypted_url, idx))
+            if new_pwd:
+                encrypted_pwd = aes_encrypt(new_pwd.encode(), vault_key)
+                cursor.execute("UPDATE vault SET password=? WHERE id=?", (encrypted_pwd, idx))
+            conn.commit()
+            print(Fore.GREEN + "Account updated.")
+            break  # Exit after successful edit
+    finally:
+        conn.close()
 
 
 #-------------------------------------------------
 
 
 # Show all entries in the vault
-def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
-# vault - The list of entries in the vault
-# copy_enabled - Whether to enable the copy option (default: True)
-# justView_enabled - Whether to enable the view option (default: True)
-
+def show_entries(vault_key: bytes, copy_enabled=True, justView_enabled=True):
     check_and_reset_timer()
     clear_screen()
 
+    # Load the vault from the file
+
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    rows = cursor.fetchall()
+    conn.close()
+
     # Check if the vault is empty
-    if not vault:
+    if not rows:
         print(Fore.RED + "\nThe vault is empty.")
         input(Fore.WHITE + "\nPress Enter to return to the menu...")
         return
     
     # Print the entries in a formatted way
     show_title()
-    
-    ## Print the header
     print(Fore.MAGENTA + Style.BRIGHT + "\nACCOUNT LIST\n")
     print(Fore.MAGENTA + "{:<5} {:<20} {:<20} {:<20}".format("ID", "Site", "Username", "Password"))
     print(Fore.MAGENTA + "-" * 75)
 
-    for i, entry in enumerate(vault, 1):
-        print(Fore.WHITE + "{:<5} {:<20} {:<20} {:<20}".format(i, entry['site'], entry['username'], '*' * len(entry['password'])))
-    
-    logging.info(f"Viewed entries")# Log the viewed entries
+    decrypted_rows = []
+    for row in rows:
+        try:
+            decrypted_site = aes_decrypt(row[1], vault_key).decode()
+            decrypted_user = aes_decrypt(row[2], vault_key).decode()
+            decrypted_pwd = aes_decrypt(row[3], vault_key).decode()
+            decrypted_url = aes_decrypt(row[4], vault_key).decode()
+        except Exception:
+            decrypted_site = "<decryption error>"
+            decrypted_user = "<decryption error>"
+            decrypted_pwd = "<decryption error>"
+            decrypted_url = "<decryption error>"
+        decrypted_rows.append((row[0], decrypted_site, decrypted_user, decrypted_pwd, decrypted_url))
+        print(Fore.WHITE + "{:<5} {:<20} {:<20} {:<20}".format(row[0], decrypted_site, decrypted_user, '*' * len(decrypted_pwd)))
 
-
+    logging.info(f"Viewed entries")
     print("\n")
 
-    # Check if the user wants to copy a password
     if copy_enabled:
-        try:
-            # Get the index of the entry to copy
-            copy = input("\nDo you want to copy a password? Enter the index or press Enter to skip: ").strip()
-            if copy:
-                idx = int(copy) - 1
-                if 0 <= idx < len(vault):
-                    pyperclip.copy(vault[idx]['password']) # Copy the password to the clipboard
-                    logging.info(Fore.GREEN + f"Copied password for site: {vault[idx]['site']}") # Log the copied password
-                    print("Password copied to clipboard, it will be ereased in 30 seconds for security.")
+        while True:
+            try:
+                copy = input("\nDo you want to copy a password? Enter the ID or press Enter to skip: ").strip()
+                if not copy:
+                    # If user presses Enter, return to the previous menu
+                    return
+                idx = int(copy)
+                for entry in decrypted_rows:
+                    if entry[0] == idx:
+                        pyperclip.copy(entry[3])
+                        logging.info(Fore.GREEN + f"Copied password for site: {entry[1]}")
+                        print(Fore.GREEN + "Password copied to clipboard, it will be erased in 30 seconds for security.")
+                        def clear_clipboard():
+                            time.sleep(30)
+                            pyperclip.copy("")
+                        threading.Thread(target=clear_clipboard, daemon=True).start()
+                        input("\nPress Enter to return to the menu...")
+                        return  # Success, exit the loop and function
+                print(Fore.RED + "Invalid ID. Please try again.")
+            except ValueError:
+                print(Fore.RED + "Invalid input. Please enter a valid number or press Enter to cancel.")
 
-                    # Start a timer to clear the clipboard after 30 seconds
-                    def clear_clipboard():
-                        time.sleep(30)
-                        pyperclip.copy("")
-                    threading.Thread(target=clear_clipboard, daemon=True).start()
-                else:
-                    print(Fore.RED + "Cancel")
-                    time.sleep(2)
-        except ValueError:
-            print(Fore.RED +"Invalid input.")
-
-    # Check if you need to wait
     if justView_enabled:
         input("\nPress Enter to return to the menu...")
 
@@ -1200,14 +1243,17 @@ def show_entries(vault: list, copy_enabled=True,justView_enabled=True):
 
 # Export the vault to a user-specified location
 def export_vault():
-
     try:
         if not os.path.exists(VAULT_FILE):
             print(Fore.RED + "Vault file not found. Please ensure the vault is initialized.")
             return
 
-        # Ask the user for the export path
-        export_path = input("Enter the path to export the vault (e.g., backup_vault.enc): ").strip()
+        # Ask the user for the export path (default to VAULT_FILE + ".backup")
+        default_export_path = VAULT_FILE + ".backup"
+        export_path = input(f"Enter the path to export the vault (default: {default_export_path}): ").strip()
+        if not export_path:
+            export_path = default_export_path
+
         with open(VAULT_FILE, "rb") as src, open(export_path, "wb") as dst:
             dst.write(src.read())
 
@@ -1407,8 +1453,7 @@ def advanced_options (log_key: bytes, master_pwd: str,salt: bytes):
 
 
 # Manage entries in the vault
-def manage_entries(vault: list, vault_key: bytes):
-# vault - The list of entries in the vault
+def manage_entries(vault_key: bytes):
 # vault_key - The encryption key used to encrypt the vault
 
     while True:
@@ -1427,19 +1472,17 @@ def manage_entries(vault: list, vault_key: bytes):
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4", "5", "6"])
 
         if choice == "1":
-            show_entries(vault, copy_enabled=False)
+            show_entries(vault_key, copy_enabled=False)
         elif choice == "2":
-            show_entries(vault, copy_enabled=True)
+            show_entries(vault_key, copy_enabled=True, justView_enabled=False)
         elif choice == "3":
-            edit_entry(vault)
-            save_vault(vault_key, vault)
+            edit_entry(vault_key)
         elif choice == "4":
-            delete_entry(vault)
-            save_vault(vault_key, vault)
+            delete_entry(vault_key)
         elif choice == "5":
-            auto_login(vault)
+            auto_login(vault_key)
         elif choice == "6":
-            check_vault_passwords(vault)
+            check_vault_passwords(load_vault_sqlite(vault_key),vault_key)
         elif choice == "0":
             break
 
@@ -1474,37 +1517,63 @@ def show_title():
 
 
 # Check if the session has timed out and reset the timer
-def auto_login(vault: list):
-# vault - The list of entries in the vault
-
+def auto_login(vault_key: bytes):
     check_and_reset_timer()
 
-    show_entries(vault, copy_enabled=False, justView_enabled=False) # Show entries without copy option
-    if not vault:
+    # Load and show entries
+    conn = sqlite3.connect(VAULT_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        print(Fore.RED + "The vault is empty.")
+        input(Fore.WHITE + "\nPress Enter to return to the menu...")
         return
 
-    try:
-        # Get the index of the entry to auto-login
-        idx = int(input("Enter the account index to auto-login (leave blank to cancel): ").strip()) - 1
-        if 0 <= idx < len(vault):
-            entry = vault[idx]
-            logging.info(f"Auto-login initiated for site: {entry['site']}, URL: {entry['url']}") # Log the auto-login attempt
-            print(f"Opening {entry['site']}...")
-            webbrowser.open(entry['url'])  # Open the URL in the default browser
+    show_entries(vault_key, copy_enabled=False, justView_enabled=False)  # Show entries without copy option
 
-            # Wait for the browser to load
+    while True:
+        try:
+            idx = get_valid_input("Enter the account ID to auto-login (leave blank to cancel): ", allow_empty=True)
+            if not idx:
+                print(Fore.RED + "cancelled...")
+                time.sleep(2)
+                return
+            idx = int(idx)
+            # Fetch the entry from the database by ID
+            conn = sqlite3.connect(VAULT_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT site, username, password, url FROM vault WHERE id=?", (idx,))
+            entry = cursor.fetchone()
+            conn.close()
+            if not entry:
+                print(Fore.RED + "Invalid ID. Please try again.")
+                continue  # Ask again
+
+            site_enc, username_enc, encrypted_pwd, url_enc = entry
+            try:
+                site = aes_decrypt(site_enc, vault_key).decode()
+                username = aes_decrypt(username_enc, vault_key).decode()
+                url = aes_decrypt(url_enc, vault_key).decode()
+                password = aes_decrypt(encrypted_pwd, vault_key).decode()
+            except Exception:
+                print(Fore.RED + "Could not decrypt password for this entry.")
+                return
+
+            logging.info(f"Auto-login initiated for site: {site}, URL: {url}")
+            print(f"Opening {site}...")
+            webbrowser.open(url)
             time.sleep(3)
-
-            # Simulate typing the username and password
-            pyautogui.typewrite(entry['username'])
-            pyautogui.press('tab')  # Move to the password field
-            pyautogui.typewrite(entry['password'])
-            pyautogui.press('enter')  # Submit the form
+            pyautogui.typewrite(username)
+            pyautogui.press('tab')
+            pyautogui.typewrite(password)
+            pyautogui.press('enter')
             print(Fore.GREEN + "Auto-login completed.")
-        else:
-            print(Fore.RED + "Invalid index.")
-    except ValueError:
-        print(Fore.RED + "Invalid input.")
+            break  # Success
+        except ValueError:
+            print(Fore.RED + "Invalid input.")
 
 
 #-------------------------------------------------
@@ -1512,124 +1581,127 @@ def auto_login(vault: list):
 
 # Main function
 def main():
-
     # Initialize global variables
     global last_action
 
     # Ensure the secure folder exists
     create_secure_folder()
 
-    # Initialize the vault
-    init_vault()
-
-
-    # Load the username
-    username = "User"
-    try:
-        with open(os.path.join(SECURE_FOLDER, "username.txt"), "r") as f:
-            username = f.read().strip()
-    except FileNotFoundError:
-        logging.warning("Username file not found. Defaulting to 'User'.")
-
-
-    # Ask for master password
+    # --- DECRYPT THE DATABASE FILE BEFORE ANYTHING ELSE ---
+    # Ask for master password early to get the key
     clear_screen()
     show_title()
     print(Fore.MAGENTA + Style.BRIGHT + "\nWELCOME BACK\n\n")
+
+    first_run = not (os.path.exists(SALT_FILE) and os.path.exists(FILE_2FA) and os.path.exists(VAULT_FILE) and os.path.getsize(VAULT_FILE) > 0)
+
+    if first_run:
+        print(Fore.YELLOW + "First time setup: registration required.")
+        init_vault()
+        print(Fore.GREEN + "Registration complete. Please restart the program.")
+
+    
     master_pwd = getpass.getpass("Enter the master password: ")
-    
+    decrypted_salt = decrypt_salt_file(master_pwd)
+    vault_key = derive_key(master_pwd, decrypted_salt)
 
-    if not verify_2fa_code(master_pwd, decrypt_salt_file(master_pwd)):
-        print(Fore.RED + "2FA verification failed.")
-        logging.error("2FA verification failed.")
-        exit(1)
+    if os.path.exists(VAULT_FILE) and os.path.getsize(VAULT_FILE) > 0:
+        decrypt_db_file(vault_key)
 
-
-    # Setting up the progress bar
-    steps = [
-        "Decrypting the salt file..",
-        "Deriving the vault key...",
-        "Setting up encrypted logging...",
-        "Loading the vault..."
-    ]
-    
-    progress_bar = tqdm.tqdm(steps, desc="Loading", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
-    
-    # Decrypt the salt file
     try:
+        init_sqlite_vault()
+        
 
-        # Step 1: Decrypt the salt file
-        progress_bar.set_description(steps[0])
-        decrypted_salt = decrypt_salt_file(master_pwd)
-        progress_bar.update(1)
+        # Load the username
+        username = "User"
+        try:
+            with open(USERNAME_FILE, "r") as f:
+                username = f.read().strip()
+        except FileNotFoundError:
+            logging.warning("Username file not found. Defaulting to 'User'.")
 
-        # Step 2: Derive the vault key
-        progress_bar.set_description(steps[1])
-        vault_key = derive_key(master_pwd, decrypted_salt)
-        progress_bar.update(1)
-
-        # Step 3: Set up encrypted logging
-        progress_bar.set_description(steps[2])
         log_key = derive_key(master_pwd + "LOGS", decrypted_salt)
         setup_logging(log_key)
-        logging.info("Session started.")
+
+        if not verify_2fa_code(master_pwd, decrypted_salt):
+            print(Fore.RED + "2FA verification failed.")
+            logging.error("2FA verification failed.")
+            exit(1)
+
         log_user_info()
-        progress_bar.update(1)
 
-        # Step 4: Load the vault
-        progress_bar.set_description(steps[3])
-        vault = load_vault(vault_key)
-        progress_bar.update(1)
+        # Setting up the progress bar
+        steps = [
+            "Deriving the vault key...",
+            "Loading the vault..."
+        ]
+        
+        progress_bar = tqdm.tqdm(steps, desc="Loading", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
+        
+        # Decrypt the salt file
+        try:
 
-    except ValueError as ve:
+            # Step 1: Derive the vault key
+            progress_bar.set_description(steps[0])
+            vault_key = derive_key(master_pwd, decrypted_salt)
+            progress_bar.update(1)
+
+            # Step 2: Load the vault
+            progress_bar.set_description(steps[1])
+            vault = load_vault_sqlite(vault_key)
+            progress_bar.update(1)
+
+        except ValueError as ve:
+            progress_bar.close()
+            print(Fore.RED + f"Error: {ve}")
+            logging.error(f"Error during loading: {ve}")
+            exit(1)
+        except RuntimeError as re:
+            progress_bar.close()
+            print(Fore.RED + f"Unexpected error: {re}")
+            logging.error(f"Unexpected error during loading: {re}")
+            exit(1)
+        except Exception as e:
+            progress_bar.close()
+            print(Fore.RED + f"Unexpected error: {e}")
+            logging.error(f"Unexpected error during loading: {e}")
+            exit(1)
+
         progress_bar.close()
-        print(Fore.RED + f"Error: {ve}")
-        logging.error(f"Error during loading: {ve}")
-        exit(1)
-    except RuntimeError as re:
-        progress_bar.close()
-        print(Fore.RED + f"Unexpected error: {re}")
-        logging.error(f"Unexpected error during loading: {re}")
-        exit(1)
-    except Exception as e:
-        progress_bar.close()
-        print(Fore.RED + f"Unexpected error: {e}")
-        logging.error(f"Unexpected error during loading: {e}")
-        exit(1)
+        print(Fore.GREEN + "Loading completed successfully.")
+        time.sleep(1)
+        try:
+            while True:
+                check_and_reset_timer()
 
-    progress_bar.close()
-    print(Fore.GREEN + "Loading completed successfully.")
-    time.sleep(1)
-    try:
-        while True:
-            check_and_reset_timer()
+                clear_screen()
+                show_title()
 
-            clear_screen()
-            show_title()
+                print(Fore.MAGENTA + Style.BRIGHT +"\nMAIN MENU                                Hi "+f"{username}\n")
+                print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " Add an account")
+                print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Manage accounts")
+                print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Advanced options")
+                print(Fore.RED + "\n[0] Exit\n")
+                choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
-            print(Fore.MAGENTA + Style.BRIGHT +"\nMAIN MENU                                Hi "+f"{username}\n")
-            print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " Add an account")
-            print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Manage accounts")
-            print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Advanced options")
-            print(Fore.RED + "\n[0] Exit\n")
-            choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
-
-            if choice == "1":
-                add_entry(vault)
-                save_vault(vault_key, vault)
-            elif choice == "2":
-                manage_entries(vault, vault_key)
-            elif choice == "3":
-                advanced_options(log_key,master_pwd,decrypted_salt)
-            elif choice == "0":
-                logging.info("User logged out.")
-                break
-    except Exception as e:
-        logging.error(f"Unexpected error in main loop: {e}")
+                if choice == "1":
+                    add_entry(vault_key)
+                elif choice == "2":
+                    manage_entries(vault_key)
+                elif choice == "3":
+                    advanced_options(log_key,master_pwd,decrypted_salt)
+                elif choice == "0":
+                    logging.info("User logged out.")
+                    break
+        except Exception as e:
+            logging.error(f"Unexpected error in main loop: {e}")
     finally:
         logging.info("Session ended.")
         backup_logs()  # Back up logs at the end of the session
+
+        # --- ENCRYPT THE DATABASE FILE BEFORE EXIT ---
+        encrypt_db_file(vault_key)
         
 
 if __name__ == "__main__": 
-    main()	
+    main()

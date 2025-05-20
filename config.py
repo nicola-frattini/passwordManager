@@ -5,11 +5,13 @@ import os
 
 SECURE_FOLDER = os.path.join(os.getenv("LOCALAPPDATA", os.path.expanduser("~\\Appdata\\Local")), "PasswordManager")
 
-VAULT_FILE = os.path.join(SECURE_FOLDER,"security","vault.enc")
+VAULT_FILE = os.path.join(SECURE_FOLDER,"security","vault.db")
 
 SALT_FILE = os.path.join(SECURE_FOLDER, "security","salt.bin")
 
 LOG_FILE = os.path.join(SECURE_FOLDER, "logs","app.log")
+
+USERNAME_FILE = os.path.join(SECURE_FOLDER, "security", "username.enc")
 
 LOG_BACKUP_FOLDER = os.path.join(SECURE_FOLDER, "logs","backup")
 
