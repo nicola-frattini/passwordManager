@@ -48,7 +48,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## ▶️ Usage
+##  Usage
 
 Simply run:
 
@@ -82,7 +82,7 @@ python passwordManager.py
 - Passwords are never stored in plaintext.
 - Uses the HaveIBeenPwned API (range query via SHA1 prefix) to check if a password has been leaked.
 
-## ⚙️ Dependencies
+##  Dependencies
 
 All are pinned in `requirements.txt`:
 
@@ -97,16 +97,16 @@ All are pinned in `requirements.txt`:
 - `tqdm`
 - `requests`
 
-## 📤 Export/Import
+##  Export/Import
 
 - Encrypted vault and keys can be exported and re-imported manually.
 - Automatic log backup system (rotated, retention policy applied).
 
-## ⚠️ Disclaimer
+##  Disclaimer
 
 This is a personal security tool. Use at your own risk. Always back up your encrypted vault and keys. No cloud, no recovery service. You lose your master password = you lose access.
 
-## 📄 License
+##  License
 
 MIT License — feel free to use, modify, and contribute.
 
