@@ -1,107 +1,115 @@
-# passwordManager
+#  Python Password Manager
 
-A secure and feature-rich password manager built with Python.                                                                            
-This application allows you to securely store, manage, and generate passwords, while also providing advanced features like encrypted logging, auto-login, and integration with the Have I Been Pwned (HIBP) API to check for compromised passwords.
+A local, secure, and encrypted password manager built with Python. Designed with security, simplicity, and privacy in mind — no cloud, no external storage, everything stays on your machine.
 
-# Features
+##  Features
 
-- **Secure Vault**:    Encrypts and stores your passwords securely using the cryptography library.                                                                                                                        
-- **Password Generation**: Generate strong, random passwords with customizable length and special characters.                                       
-- **Encrypted Logging** :   Logs are encrypted to ensure sensitive information is protected.                                      
-- **Clipboard Management**:    Copy passwords to the clipboard with automatic clearing after 30 seconds.                                      
-- **Auto-Login**:    Simulates typing credentials into websites for quick login.                                      
-- **HIBP Integration**:    Checks if your passwords have been compromised in known data breaches.                                      
-- **Session Timeout**:    Automatically logs out after a period of inactivity.                                      
-- **Backup and Export**:    Backup and export your vault and logs securely.                                      
+- AES-256 encryption in CBC mode with PKCS7 padding
+- Vault integrity verification using HMAC SHA-256
+- Encrypted SQLite database stored locally
+- Secure folders and hidden files for Windows
+- Master password secured via Argon2id key derivation (with PEPPER)
+- TOTP-based two-factor authentication (QR code setup)
+- Auto-login via PyAutoGUI (vulnerable to keyloggers, optional)
+- Check passwords against known breaches using the Have I Been Pwned API
+- Encrypted and color-coded logs with advanced filtering/search/export
+- Clipboard-safe password handling (auto-clears after 30 seconds)
+- Key backup and export functionality
 
-# Requirements
-The application requires the following Python libraries:                                      
-```
-cryptography==41.0.3      # For encryption, decryption, and key derivation                                      
-requests==2.31.0          # For HIBP API calls                                                                            
-pyperclip==1.8.2          # For clipboard operations                                                                            
-pyautogui==0.9.53         # For simulating keyboard and mouse actions                                      
-keyring==24.2.0           # For securely storing and retrieving keys                                      
-```
-
-# Installation
-
-### 1. Clone the repository:                
-```
-git clone https://github.com/your-username/passwordManager.git                                      
-cd passwordManager
-```                                   
-### 2. Install the required dependencies:                                                                            
+##  Project Structure
 
 ```
-pip install -r requirements.txt          
-```                                                                  
-
-### 3. Run the application:                                                                            
-```
-python passwordManager.py     
-```                                                                       
-
-
-# Security Features
-
-## Encryption:
-Uses AES encryption (via cryptography.Fernet) to secure the vault and logs.                                      
-Derives keys using PBKDF2 with SHA256 and a machine-specific pepper.                                      
-
-## Key Management:                                      
-Keys are securely stored using the keyring library.                                      
-
-## Session Timeout:
-Automatically logs out after inactivity.       
-
-## HIBP Integration:
-Checks passwords against the Have I Been Pwned database for known breaches.
-
-## Clipboard Clearing:
-Automatically clears copied passwords from the clipboard after 30 seconds.
-
-# Configuration
-The application uses a config.py file to manage settings:
-
-# File Structure
-```
-passwordManager/                                                                   
-├── passwordManager.py       # Main application file                                                                            
-├── config.py                # Configuration file                                                                            
-├── requirements.txt         # Dependencies                                                                            
-├── secure_vault/            # Encrypted vault and salt files                                                                            
-├── log_backups/             # Backup logs                                                                            
-└── README.md                # Documentation
-                                          
+.
+├── passwordManager.py     # Main script with all the functionality
+├── config.py              # Configuration constants and paths
+├── requirements.txt       # Python dependencies
+└── README.md              # Project documentation
 ```
 
-# Usage
+## 🔧 Installation
 
-### First access
+### 1. Clone the repository
 
-Upon first access, you will be prompted to set a Master Password, which is the password that grants access to the program and is used to generate various encryption keys.
+```bash
+git clone https://github.com/your-username/password-manager.git
+cd password-manager
+```
 
-### Main Menu
+### 2. Create virtual environment (optional but recommended)
 
-A menu will be displayed where you can add accounts with passwords, manage passwords, and access advanced options.
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-### Account Management
+### 3. Install dependencies
 
-Here, you can view, edit, and delete accounts. Additionally, you can copy passwords, perform auto-login, and conduct security checks on passwords.
+```bash
+pip install -r requirements.txt
+```
 
-### Advanced Menu
+## ▶️ Usage
 
-In this menu, you will have access to exporting keys and the vault, as well as the log management menu.
+Simply run:
 
-### Log Menu
+```bash
+python passwordManager.py
+```
 
-You can view logs, filter them by date, keyword, or type, and export them in plain text if needed.
+### First-time setup
 
+- You'll be prompted to create a master password and username.
+- A secure salt file and encrypted vault will be initialized.
+- 2FA setup with TOTP and QR code.
+- Vault is stored locally and encrypted end-to-end.
 
-# License
-This project is licensed under the MIT License. See the LICENSE file for details.
+### Regular usage
 
-# Author
-Developed by @nicola-frattini.
-Feel free to reach out for suggestions or contributions!
+- Enter your master password and TOTP code to access your vault.
+- Add, edit, delete, export, and auto-fill credentials.
+- Export logs and keys when needed.
+
+##  Security Design
+
+- **Encryption**: AES-256-CBC with random IVs, passwords are encrypted at rest.
+- **Key Derivation**: Argon2id with machine-specific PEPPER.
+- **Integrity**: HMAC-SHA256 checks to detect tampering.
+- **2FA**: Enforced TOTP for login verification.
+- **Clipboard**: Passwords copied are auto-cleared after 30s.
+
+##  Online Security
+
+- Passwords are never stored in plaintext.
+- Uses the HaveIBeenPwned API (range query via SHA1 prefix) to check if a password has been leaked.
+
+## ⚙️ Dependencies
+
+All are pinned in `requirements.txt`:
+
+- `cryptography`
+- `argon2-cffi`
+- `keyring`
+- `pyotp`
+- `qrcode`
+- `pyautogui`
+- `pyperclip`
+- `colorama`
+- `tqdm`
+- `requests`
+
+## 📤 Export/Import
+
+- Encrypted vault and keys can be exported and re-imported manually.
+- Automatic log backup system (rotated, retention policy applied).
+
+## ⚠️ Disclaimer
+
+This is a personal security tool. Use at your own risk. Always back up your encrypted vault and keys. No cloud, no recovery service. You lose your master password = you lose access.
+
+## 📄 License
+
+MIT License — feel free to use, modify, and contribute.
+
+---
+
+Made by @nicola-frattini.
