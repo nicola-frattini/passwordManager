@@ -1,55 +1,40 @@
-from typing import Optional
 from config import *
+
 import os
-import json
+import stat
+import uuid
+import time
 import base64
 import getpass
 import ctypes
-import stat
-import uuid
-import tqdm
-
-import hashlib
-import requests
-
-from hashlib import sha256
-
-import time
-import pyperclip
-
+import threading
 import secrets
 import string
-
-
-
-from cryptography.hazmat.primitives import hashes
-from logging.handlers import RotatingFileHandler
-
-import webbrowser
-import pyautogui
-import threading
-import hashlib
-import logging
 import socket
-import keyring
+import logging
+import sqlite3
+import requests
+import webbrowser
+
+from hashlib import sha256
+import hashlib
+import hmac
+import tempfile
+
 from colorama import Fore, Back, Style, init
+from tqdm import tqdm
 
-from argon2 import PasswordHasher
-from argon2.low_level import hash_secret_raw, Type
-
+import pyperclip
+import pyautogui
+import pyotp
+import qrcode
+import keyring
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.backends import default_backend
 
-
-import pyotp
-import qrcode
-
-import gc
- 
-
-import sqlite3
+from argon2.low_level import hash_secret_raw, Type
 
 
 
@@ -63,6 +48,24 @@ init(autoreset=True)
 
 # Variables for session timeout
 last_action = time.time()
+
+#-------------------------------------------------
+# Function for the HMAC (Hash-based Message Authentication Code)
+
+# compute the HMAC of the data using the provided key
+def compute_hmac(data: bytes, key: bytes) -> bytes:
+    return hmac.new(key, data, hashlib.sha256).digest()
+
+# Verify the HMAC of the data using the provided key
+def save_hmac(hmac_value: bytes, hmac_file: str):
+    with open(hmac_file, "wb") as f:
+        f.write(hmac_value)
+
+# Load the HMAC from a file
+def load_hmac(hmac_file: str) -> bytes:
+    with open(hmac_file, "rb") as f:
+        return f.read()
+
 
 
 #--------------------------------------------------
@@ -118,14 +121,31 @@ def encrypt_db_file(key: bytes):
     encrypted = aes_encrypt(data, key)
     with open(VAULT_FILE, "wb") as f:
         f.write(encrypted)
+    # Compute the HMAC of the encrypted data
+    hmac_value = compute_hmac(encrypted, key)
+    save_hmac(hmac_value, HMAC_FILE)  # Save the HMAC to a file
 
 
-def decrypt_db_file(key: bytes):
+
+def decrypt_db_file(key: bytes) -> bytes | None: 
     with open(VAULT_FILE, "rb") as f:
         encrypted = f.read()
-    data = aes_decrypt(encrypted, key)
-    with open(VAULT_FILE, "wb") as f:
-        f.write(data)
+
+    # Verify the HMAC of the encrypted data
+    try:
+        # Load the expected HMAC from the file
+        expected_hmac = load_hmac(HMAC_FILE)
+    except FileNotFoundError:
+        print(Fore.RED + "HMAC file not found. Vault integrity cannot be verified!")
+        return False
+    # Verify the HMAC
+    actual_hmac = compute_hmac(encrypted, key)
+    if not hmac.compare_digest(expected_hmac, actual_hmac):
+        print(Fore.RED + "Vault integrity check failed! The file may have been tampered with.")
+        logging.warning("Vault integrity check failed! The file may have been tampered with.")
+        return False
+    
+    return aes_decrypt(encrypted, key)  # Decrypt the vault file
 
 
 
@@ -310,6 +330,7 @@ def decrypt_logs(log_file: str, key: bytes):
 # key - The encryption key used for decryption
 
     try:
+
         with open(log_file, "rb") as f:
             for line in f:
                 if not line.strip():  # Skip empty lines
@@ -322,9 +343,9 @@ def decrypt_logs(log_file: str, key: bytes):
                     if " - INFO - " in decrypted_str:
                         color = Fore.GREEN
                     elif " - WARNING - " in decrypted_str:
-                        color = Fore.YELLOW
-                    elif " - ERROR - " in decrypted_str:
                         color = Fore.RED
+                    elif " - ERROR - " in decrypted_str:
+                        color = Fore.YELLOW
                     elif " - CRITICAL - " in decrypted_str:
                         color = Fore.MAGENTA + Style.BRIGHT
                     else:
@@ -510,6 +531,16 @@ def export_keys(export_path: str, master_password: str,salt: bytes):
    
     try:
         
+        # Set the default export path
+        default_dir = os.path.join(os.path.expanduser("~"), "Documenti")
+        if not os.path.exists(default_dir):
+            default_dir = os.path.join(os.path.expanduser("~"), "Documents")  # fallback for non-Italian systems
+        default_export_path = os.path.join(default_dir, "backup_keys.txt")
+
+        if not export_path:
+            export_path = default_export_path
+
+
         steps = [
             "Decrypting the salt file...",
             "Deriving encryption keys...",
@@ -518,7 +549,7 @@ def export_keys(export_path: str, master_password: str,salt: bytes):
         ]
 
         # Initialize the progress bar
-        progress_bar = tqdm.tqdm(steps, desc="Exporting Keys", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
+        progress_bar = tqdm(steps, desc="Exporting Keys", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
 
         # Step 1: Decrypt the salt file
         progress_bar.set_description(steps[0])
@@ -627,36 +658,44 @@ def check_password_hibp(password: str) -> int:
 
 
 # Check if the password has been compromised using HIBP API for all passwords in the vault
-def check_vault_passwords(vault: list,vault_key: bytes):
-# vault - The list of entries in the vault
+def check_vault_passwords(conn,vault_key: bytes):
+# conn - The SQLite connection object
 # vault_key - The encryption key used to encrypt the vault
 
     logging.info("Checking passwords in the vault...")
-    if not vault:
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    rows = cursor.fetchall()
+
+    if not rows:
         print(Fore.RED + "The vault is empty.")
         return
-    
+
     clear_screen()
     show_title()
-    print(Fore.MAGENTA +  Style.BRIGHT + "\nCHECK PASSWORDS\n")
+    print(Fore.MAGENTA + Style.BRIGHT + "\nCHECK PASSWORDS\n")
     print("\nChecking passwords in the vault...\n")
+
 
     # Initialize a list to store results
     results = []
 
     # Loop through each entry in the vault and check the password
-    with tqdm.tqdm(vault, desc="Checking passwords", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}") as progress_bar:
-        for entry in progress_bar:
-            password = entry['password']
-            if check_password_hibp(password) != 0:
+    with tqdm(rows, desc="Checking passwords", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}") as progress_bar:
+        for row in progress_bar:
+            try:
+                decrypted_pwd = aes_decrypt(row[3], vault_key).decode()
+            except Exception:
+                decrypted_pwd = "<decryption error>"
+
+            if decrypted_pwd != "<decryption error>" and check_password_hibp(decrypted_pwd) != 0:
                 try:
-                    site = aes_decrypt(entry['site'], vault_key).decode()
+                    site = aes_decrypt(row[1], vault_key).decode()
                 except Exception:
                     site = "<decryption error>"
                 results.append((site, Fore.RED + f"WARNING: The password for {site} has been compromised! Change it immediately."))
                 logging.warning(f"Password for {site} has been compromised!")
-        
-    progress_bar.close()
 
     print(Fore.GREEN + "\nPassword check completed.\n")
     if results:
@@ -941,7 +980,8 @@ def init_vault():
 
 
 # Add a new item
-def add_entry(vault_key: bytes):
+def add_entry(conn,vault_key: bytes):
+# conn - The SQLite connection object
 # vault_key - The encryption key used to encrypt the vault
 
     while True:
@@ -998,7 +1038,6 @@ def add_entry(vault_key: bytes):
                 print(Fore.GREEN + f"Password generated: {pwd}")
 
             # Encrypt all fields before storing
-            conn = sqlite3.connect(VAULT_FILE)
             cursor = conn.cursor()
             encrypted_site = aes_encrypt(site.encode(), vault_key)
             encrypted_user = aes_encrypt(user.encode(), vault_key)
@@ -1009,7 +1048,6 @@ def add_entry(vault_key: bytes):
                 (encrypted_site, encrypted_user, encrypted_pwd, encrypted_url)
             )
             conn.commit()
-            conn.close()
 
             print(Fore.GREEN + "Credentials entered correctly.")
             logging.info(Fore.GREEN + f"Added new entry for site: {site}, url: {url}")
@@ -1028,22 +1066,20 @@ def add_entry(vault_key: bytes):
 
 
 # Delete an entry
-def delete_entry(vault_key: bytes):
+def delete_entry(conn,vault_key: bytes):
+# conn - The SQLite connection object
 # vault_key - The encryption key used to encrypt the vault
 
-    
-    conn = sqlite3.connect(VAULT_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT id, site, username, password, url FROM vault")
     rows = cursor.fetchall()
 
     if not rows:
         print(Fore.RED + "The vault is empty.")
-        conn.close()
         input(Fore.WHITE + "\nPress Enter to return to the menu...")
         return
 
-    show_entries(vault_key, copy_enabled=False, justView_enabled=False)
+    show_entries(conn,vault_key, copy_enabled=False, justView_enabled=False)
 
     while True:
         try:
@@ -1058,11 +1094,10 @@ def delete_entry(vault_key: bytes):
             if not entry:
                 print(Fore.RED + "Invalid ID. Please try again.")
                 continue  # Ask again
-            confirm = get_valid_input(Fore.RED + f"Do you confirm the deletion of {entry[1]}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
+            confirm = get_valid_input(Fore.RED + f"Do you confirm the deletion of {aes_decrypt(entry[1], vault_key).decode()}? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
             if not confirm or confirm == "n":
                 print(Fore.RED + "cancelled...")
                 time.sleep(2)
-                conn.close()
                 return
             elif confirm == "y":
                 cursor.execute("DELETE FROM vault WHERE id=?", (idx,))
@@ -1070,30 +1105,28 @@ def delete_entry(vault_key: bytes):
                 print(Fore.GREEN + "Entry deleted.")
         except ValueError:
             print(Fore.RED + "Invalid input. Please enter a valid number.")
-        finally:
-            conn.close()
 
 
 #-------------------------------------------------
 
 
 # Edit an entry
-def edit_entry(vault_key: bytes):
+def edit_entry(conn,vault_key: bytes):
+# conn- The SQLite connection object
 # vault_key - The encryption key used to encrypt the vault
 
     # Check if the vault is empty
-    conn = sqlite3.connect(VAULT_FILE)
+
     cursor = conn.cursor()
     cursor.execute("SELECT id, site, username, password, url FROM vault")
     rows = cursor.fetchall()
 
     if not rows:
         print(Fore.RED + "The vault is empty.")
-        conn.close()
         input(Fore.WHITE + "\nPress Enter to return to the menu...")
         return
 
-    show_entries(vault_key, copy_enabled=False, justView_enabled=False)
+    show_entries(conn,vault_key, copy_enabled=False, justView_enabled=False)
 
     try:
         while True:
@@ -1146,6 +1179,11 @@ def edit_entry(vault_key: bytes):
                     time.sleep(2)
                     break
                 length = int(length) if length.isdigit() else 24
+                include_special_chars = get_valid_input("Include special characters? (y/n, or leave blank to cancel): ", valid_options=["y", "n"], allow_empty=True)
+                if not include_special_chars:
+                    print(Fore.RED + "cancelled...")
+                    time.sleep(2)
+                    break
                 new_pwd = generate_password(length)
                 print(f"Generated password: {new_pwd}")
 
@@ -1160,26 +1198,23 @@ def edit_entry(vault_key: bytes):
                 cursor.execute("UPDATE vault SET password=? WHERE id=?", (encrypted_pwd, idx))
             conn.commit()
             print(Fore.GREEN + "Account updated.")
-            break  # Exit after successful edit
-    finally:
-        conn.close()
-
+            input("\nPress Enter to return to the menu...")
+    except Exception as e:
+        print(Fore.RED + f"Unexpected error editing entry: {e}")
 
 #-------------------------------------------------
 
 
 # Show all entries in the vault
-def show_entries(vault_key: bytes, copy_enabled=True, justView_enabled=True):
+def show_entries(conn,vault_key: bytes, copy_enabled=True, justView_enabled=True):
     check_and_reset_timer()
     clear_screen()
 
     # Load the vault from the file
 
-    conn = sqlite3.connect(VAULT_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT id, site, username, password, url FROM vault")
     rows = cursor.fetchall()
-    conn.close()
 
     # Check if the vault is empty
     if not rows:
@@ -1248,8 +1283,12 @@ def export_vault():
             print(Fore.RED + "Vault file not found. Please ensure the vault is initialized.")
             return
 
-        # Ask the user for the export path (default to VAULT_FILE + ".backup")
-        default_export_path = VAULT_FILE + ".backup"
+        # Ask the user for the export path (default to Documents folder)
+        default_dir = os.path.join(os.path.expanduser("~"), "Documenti")
+        if not os.path.exists(default_dir):
+            default_dir = os.path.join(os.path.expanduser("~"), "Documents")  # fallback for non-Italian systems
+        default_export_path = os.path.join(default_dir, "vault.txt")
+
         export_path = input(f"Enter the path to export the vault (default: {default_export_path}): ").strip()
         if not export_path:
             export_path = default_export_path
@@ -1257,6 +1296,17 @@ def export_vault():
         with open(VAULT_FILE, "rb") as src, open(export_path, "wb") as dst:
             dst.write(src.read())
 
+        # Export the HMAC file (if exists)
+        hmac_export_path = export_path + ".hmac"
+        if os.path.exists(HMAC_FILE):
+            with open(HMAC_FILE, "rb") as src, open(hmac_export_path, "wb") as dst:
+                dst.write(src.read())
+            print(Fore.GREEN + f"HMAC exported successfully to {hmac_export_path}")
+            logging.info(f"HMAC exported to {hmac_export_path}")
+        else:
+            print(Fore.YELLOW + "HMAC file not found, only vault exported.")
+
+        
         print(Fore.GREEN + f"Vault exported successfully to {export_path}")
         logging.info(f"Vault exported to {export_path}")
     except Exception as e:
@@ -1264,6 +1314,48 @@ def export_vault():
         logging.error(f"Error exporting vault: {e}")
 
     input("\nPress Enter to return to the menu...")
+
+
+#-------------------------------------------------
+
+
+def import_vault():
+    try:
+        print(Fore.MAGENTA + "\nIMPORT VAULT\n")
+        import_path = input("Enter the path of the vault file to import: ").strip()
+        if not import_path or not os.path.exists(import_path):
+            print(Fore.RED + "File not found. Import cancelled.")
+            return
+
+        # Ask the user for the HMAC file path (optional)
+        import_hmac_path = input("Enter the path of the HMAC file to import (or leave blank to skip): ").strip()
+        # Fai un backup del vault attuale prima di sovrascrivere
+        if os.path.exists(VAULT_FILE):
+            backup_path = VAULT_FILE + ".bak"
+            with open(VAULT_FILE, "rb") as src, open(backup_path, "wb") as dst:
+                dst.write(src.read())
+            print(Fore.YELLOW + f"Current vault backed up to {backup_path}")
+
+        # Copy the vault file to the destination
+        with open(import_path, "rb") as src, open(VAULT_FILE, "wb") as dst:
+            dst.write(src.read())
+        print(Fore.GREEN + "Vault file imported successfully.")
+
+        # Copy the HMAC file if provided
+        if import_hmac_path and os.path.exists(import_hmac_path):
+            with open(import_hmac_path, "rb") as src, open(HMAC_FILE, "wb") as dst:
+                dst.write(src.read())
+            print(Fore.GREEN + "HMAC file imported successfully.")
+        elif import_hmac_path:
+            print(Fore.YELLOW + "HMAC file not found, skipped.")
+
+        print(Fore.GREEN + "Import completed. Please restart the program to load the new vault.")
+        input("\nPress Enter to return to the menu...")
+
+    except Exception as e:
+        print(Fore.RED + f"Error importing vault: {e}")
+        logging.error(f"Error importing vault: {e}")
+        input("\nPress Enter to return to the menu...")
 
 
 #--------------------------------------------------
@@ -1436,15 +1528,18 @@ def advanced_options (log_key: bytes, master_pwd: str,salt: bytes):
         print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " Export keys")
         print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " View log menu")
         print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Export crypted vault backup")
+        print(Fore.LIGHTMAGENTA_EX + "[4]" + Fore.WHITE +  " Import crypted vault backup")    
         print(Fore.RED + "\n[0] Return to the menu\n")
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
         if choice == "1":
-            export_keys(input("Enter the path to export the keys (e.g., backup_keys.txt): ").strip(),master_pwd,salt)
+            export_keys(input("Enter the path to export the keys (default C:/user/documenti/backup_keys.txt): ").strip(),master_pwd,salt)
         elif choice == "2":
             log_view_menu(LOG_FILE, log_key)
         elif choice == "3":
             export_vault()
+        elif choice == "4":
+            import_vault()
         elif choice == "0":
             break
 
@@ -1453,7 +1548,8 @@ def advanced_options (log_key: bytes, master_pwd: str,salt: bytes):
 
 
 # Manage entries in the vault
-def manage_entries(vault_key: bytes):
+def manage_entries(conn,vault_key: bytes):
+# conn - The SQLite connection object
 # vault_key - The encryption key used to encrypt the vault
 
     while True:
@@ -1472,17 +1568,17 @@ def manage_entries(vault_key: bytes):
         choice = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4", "5", "6"])
 
         if choice == "1":
-            show_entries(vault_key, copy_enabled=False)
+            show_entries(conn,vault_key, copy_enabled=False)
         elif choice == "2":
-            show_entries(vault_key, copy_enabled=True, justView_enabled=False)
+            show_entries(conn,vault_key, copy_enabled=True, justView_enabled=False)
         elif choice == "3":
-            edit_entry(vault_key)
+            edit_entry(conn,vault_key)
         elif choice == "4":
-            delete_entry(vault_key)
+            delete_entry(conn,vault_key)
         elif choice == "5":
-            auto_login(vault_key)
+            auto_login(conn,vault_key)
         elif choice == "6":
-            check_vault_passwords(load_vault_sqlite(vault_key),vault_key)
+            check_vault_passwords(conn,vault_key)
         elif choice == "0":
             break
 
@@ -1517,22 +1613,23 @@ def show_title():
 
 
 # Check if the session has timed out and reset the timer
-def auto_login(vault_key: bytes):
+def auto_login(conn,vault_key: bytes):
+# conn - The SQLite connection object
+# vault_key - The encryption key used to encrypt the vault
+
     check_and_reset_timer()
 
     # Load and show entries
-    conn = sqlite3.connect(VAULT_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT id, site, username, password, url FROM vault")
     rows = cursor.fetchall()
-    conn.close()
 
     if not rows:
         print(Fore.RED + "The vault is empty.")
         input(Fore.WHITE + "\nPress Enter to return to the menu...")
         return
 
-    show_entries(vault_key, copy_enabled=False, justView_enabled=False)  # Show entries without copy option
+    show_entries(conn,vault_key, copy_enabled=False, justView_enabled=False)  # Show entries without copy option
 
     while True:
         try:
@@ -1543,11 +1640,9 @@ def auto_login(vault_key: bytes):
                 return
             idx = int(idx)
             # Fetch the entry from the database by ID
-            conn = sqlite3.connect(VAULT_FILE)
-            cursor = conn.cursor()
             cursor.execute("SELECT site, username, password, url FROM vault WHERE id=?", (idx,))
             entry = cursor.fetchone()
-            conn.close()
+
             if not entry:
                 print(Fore.RED + "Invalid ID. Please try again.")
                 continue  # Ask again
@@ -1600,17 +1695,49 @@ def main():
         init_vault()
         print(Fore.GREEN + "Registration complete. Please restart the program.")
 
+
     
     master_pwd = getpass.getpass("Enter the master password: ")
     decrypted_salt = decrypt_salt_file(master_pwd)
     vault_key = derive_key(master_pwd, decrypted_salt)
-
+    # Check if the vault file exists and is not empty
+    decrypted_data = None
     if os.path.exists(VAULT_FILE) and os.path.getsize(VAULT_FILE) > 0:
-        decrypt_db_file(vault_key)
+        decrypted_data = decrypt_db_file(vault_key)
+        if decrypted_data is None:
+            print(Fore.RED + "Impossibile aprire il vault per problemi di integrità. Contatta l'amministratore o ripristina un backup.")
+            logging.error("Vault integrity error: user notified.")
+            input("\nPremi Invio per uscire...")
+            exit(1)
+
+    # Create the vault in RAM
+    conn = sqlite3.connect(":memory:")
+    if decrypted_data:
+        # Carica il database decifrato in RAM
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(decrypted_data)
+            tmp.flush()
+            tmp_path = tmp.name
+        disk_conn = sqlite3.connect(tmp_path)
+        for line in disk_conn.iterdump():
+            if line not in ('BEGIN;', 'COMMIT;'):
+                conn.execute(line)
+        disk_conn.close()
+        os.remove(tmp_path)
+    else:
+        # Se non esiste, crea la tabella
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vault (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site TEXT NOT NULL,
+                username TEXT NOT NULL,
+                password BLOB NOT NULL,
+                url TEXT
+            )
+        """)
 
     try:
-        init_sqlite_vault()
-        
+
 
         # Load the username
         username = "User"
@@ -1633,10 +1760,9 @@ def main():
         # Setting up the progress bar
         steps = [
             "Deriving the vault key...",
-            "Loading the vault..."
         ]
         
-        progress_bar = tqdm.tqdm(steps, desc="Loading", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
+        progress_bar = tqdm(steps, desc="Loading", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
         
         # Decrypt the salt file
         try:
@@ -1646,10 +1772,6 @@ def main():
             vault_key = derive_key(master_pwd, decrypted_salt)
             progress_bar.update(1)
 
-            # Step 2: Load the vault
-            progress_bar.set_description(steps[1])
-            vault = load_vault_sqlite(vault_key)
-            progress_bar.update(1)
 
         except ValueError as ve:
             progress_bar.close()
@@ -1685,9 +1807,9 @@ def main():
                 choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
                 if choice == "1":
-                    add_entry(vault_key)
+                    add_entry(conn,vault_key)
                 elif choice == "2":
-                    manage_entries(vault_key)
+                    manage_entries(conn,vault_key)
                 elif choice == "3":
                     advanced_options(log_key,master_pwd,decrypted_salt)
                 elif choice == "0":
@@ -1699,8 +1821,35 @@ def main():
         logging.info("Session ended.")
         backup_logs()  # Back up logs at the end of the session
 
-        # --- ENCRYPT THE DATABASE FILE BEFORE EXIT ---
-        encrypt_db_file(vault_key)
+        # Backup the vault
+        try:
+            
+            conn.commit()
+            conn.execute("SELECT 1")
+        
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                backup_conn = sqlite3.connect(tmp.name)
+                try:
+                    conn.backup(backup_conn)
+                finally:
+                    backup_conn.close()
+                tmp.seek(0)
+                plain_data = tmp.read()
+            encrypted = aes_encrypt(plain_data, vault_key)  # Encrypt the vault
+            with open(VAULT_FILE, "wb") as f:
+                f.write(encrypted)
+            
+            hmac_value = compute_hmac(encrypted, vault_key)  # Compute the HMAC
+            save_hmac(hmac_value, HMAC_FILE)
+            os.remove(tmp.name)
+        except Exception as e:
+            print(Fore.RED + f"\n[!] Error during vault backup: {e}")
+            logging.error(f"Error during vault backup: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
         
 
 if __name__ == "__main__": 

@@ -17,6 +17,7 @@ LOG_BACKUP_FOLDER = os.path.join(SECURE_FOLDER, "logs","backup")
 
 FILE_2FA = os.path.join(SECURE_FOLDER, "security", "2fa.enc")
 
+HMAC_FILE = os.path.join(SECURE_FOLDER, "security", "hmacVault.hmac")
 
 #  ServiceS name for keyring
 SERVICE_NAME = "PasswordManager"
