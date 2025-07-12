@@ -19,6 +19,8 @@ FILE_2FA = os.path.join(SECURE_FOLDER, "security", "2fa.enc")
 
 HMAC_FILE = os.path.join(SECURE_FOLDER, "security", "hmacVault.hmac")
 
+PEPPER_FILE = os.path.join(SECURE_FOLDER, "security", "pepper.bin")
+
 #  ServiceS name for keyring
 SERVICE_NAME = "PasswordManager"
 

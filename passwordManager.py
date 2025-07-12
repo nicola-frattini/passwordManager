@@ -79,9 +79,15 @@ def init_sqlite_vault():
             site TEXT NOT NULL,
             username TEXT NOT NULL,
             password BLOB NOT NULL,
-            url TEXT
+            url TEXT,
+            note TEXT
         )
     """)
+    # Aggiorna la tabella se manca la colonna note
+    try:
+        cursor.execute("ALTER TABLE vault ADD COLUMN note TEXT")
+    except sqlite3.OperationalError:
+        pass  # La colonna esiste già
     conn.commit()
     conn.close()
 
@@ -265,15 +271,6 @@ def create_backup_folder():
 
 create_backup_folder() # Create the backup folder for logs
 
-# Basic configuration for logging
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-
-
 
 # Setup logging with a rotating file handler and an encrypted log handler
 def setup_logging(key: bytes):
@@ -336,6 +333,7 @@ def decrypt_logs(log_file: str, key: bytes):
                 if not line.strip():  # Skip empty lines
                     continue
                 try:
+
                     decrypted = aes_decrypt(line.strip(),key)  # Decrypt the bytes
                     decrypted_str = decrypted.decode()  # Decode the decrypted bytes to a string
 
@@ -726,15 +724,83 @@ def check_and_reset_timer():
 
 # Derive PEPPER from the machine's unique identifier
 def get_machine_pepper() -> str:
-
-    machine_id = str(uuid.getnode()) + socket.gethostname()  # Combine hardware ID and hostname
-    return sha256(machine_id.encode()).hexdigest()  # Hash the combined identifiers
+    pepper_file = os.path.join(PEPPER_FILE)
+    
+    # Se il file PEPPER già esiste, caricalo
+    if os.path.exists(pepper_file):
+        try:
+            with open(pepper_file, "r") as f:
+                return f.read().strip()
+        except Exception as e:
+            logging.warning(f"Could not read pepper file: {e}")
+    
+    # Altrimenti generalo e salvalo
+    machine_id = str(uuid.getnode()) + socket.gethostname()
+    pepper = sha256(machine_id.encode()).hexdigest()
+    
+    try:
+        # Assicurati che la directory esista
+        os.makedirs(os.path.dirname(pepper_file), exist_ok=True)
+        with open(pepper_file, "w") as f:
+            f.write(pepper)
+        # Rendi il file accessibile solo al proprietario
+        os.chmod(pepper_file, stat.S_IRUSR | stat.S_IWUSR)
+        logging.info("Pepper generated and saved.")
+    except Exception as e:
+        logging.error(f"Could not save pepper file: {e}")
+    
+    return pepper
 
 
 #-----------------------------------------------------------
 
 # Get the machine's unique identifier and derive PEPPER
 PEPPER = get_machine_pepper()
+
+
+#------------------------------------------------------------ 
+
+def verify_keyring_consistency(master_password: str, salt: bytes) -> bool:
+    """Verify if keyring keys are consistent with current PEPPER"""
+    try:
+        # Get current derived keys
+        current_encryption_key = derive_key(master_password, salt)
+        current_salt_key = derive_key(master_password, salt)
+        
+        # Get stored keys from keyring
+        stored_encryption = keyring.get_password(SERVICE_NAME, "encryption_key")
+        stored_salt = keyring.get_password(SERVICE_NAME, "salt_encryption_key")
+        
+        if not stored_encryption or not stored_salt:
+            return False
+        
+        # Compare keys
+        stored_enc_decoded = base64.urlsafe_b64decode(stored_encryption)
+        stored_salt_decoded = base64.urlsafe_b64decode(stored_salt)
+        
+        return (stored_enc_decoded == current_encryption_key and 
+                stored_salt_decoded == current_salt_key)
+    except Exception:
+        return False
+
+def auto_fix_keyring_if_needed(master_password: str, salt: bytes):
+    """Automatically fix keyring if keys are inconsistent"""
+    if not verify_keyring_consistency(master_password, salt):
+        print(Fore.YELLOW + "Detecting inconsistent keyring keys. Auto-fixing...")
+        
+        try:
+            # Clear old keys
+            keyring.delete_password(SERVICE_NAME, "encryption_key")
+            keyring.delete_password(SERVICE_NAME, "salt_encryption_key")
+        except:
+            pass  # Keys might not exist
+        
+        # Force regeneration by calling the functions
+        get_encryption_key(master_password, salt)
+        get_salt_encryption_key(master_password, salt)
+        
+        print(Fore.GREEN + "Keyring keys regenerated successfully.")
+        logging.info("Keyring keys auto-fixed due to inconsistency.")
 
 
 #-----------------------------------------------------------
@@ -891,15 +957,18 @@ def decrypt_salt_file(master_password: str) -> bytes:
 
 
     # Check if the salt file exists
-    with open(SALT_FILE, "rb") as f:
-        encrypted_salt = f.read()
-    
-    # # Get the salt encryption key from the keyring
-    salt_key = get_salt_encryption_key(master_password, encrypted_salt) # Get the salt encryption key
-
-
-    # Decrypt the salt file
-    return aes_decrypt(encrypted_salt, salt_key) 
+    try:
+        with open(SALT_FILE, "rb") as f:
+            encrypted_salt = f.read()
+        salt_key = get_salt_encryption_key(master_password, encrypted_salt)
+        return aes_decrypt(encrypted_salt, salt_key)
+    except ValueError as ve:
+        print(Fore.RED + "\n[ERRORE] Impossibile decifrare il file salt: chiave errata o file corrotto.")
+        print(Fore.YELLOW + "Se hai cambiato la master password, o il file salt è stato sovrascritto, non sarà possibile recuperare le password salvate.")
+        raise ve
+    except Exception as e:
+        print(Fore.RED + f"\n[ERRORE] Errore inatteso durante la decifratura del salt: {e}")
+        raise e
 
 #-------------------------------------------------
 
@@ -932,9 +1001,12 @@ def compute_file_hash(file_path: str) -> str:
 # initiallze the vault
 def init_vault():
 
+
+
     # Check if the vault and salt files already exist
     if os.path.exists(SALT_FILE)  and os.path.exists(FILE_2FA) and os.path.exists(VAULT_FILE):
         return False  # Salt Vault and 2FA already initialized
+
 
     
     clear_screen() 
@@ -1009,6 +1081,8 @@ def add_entry(conn,vault_key: bytes):
                 time.sleep(2)
                 return
 
+            note = get_valid_input("Notes (optional): ", allow_empty=True)
+
             print("\n[1] Set manually a password\n[2] Generate a secure password\n\n[0] Cancel")
             choice = get_valid_input("> ", valid_options=["0", "1", "2"])
 
@@ -1043,14 +1117,15 @@ def add_entry(conn,vault_key: bytes):
             encrypted_user = aes_encrypt(user.encode(), vault_key)
             encrypted_pwd = aes_encrypt(pwd.encode(), vault_key)
             encrypted_url = aes_encrypt(url.encode(), vault_key)
+            encrypted_note = aes_encrypt(note.encode(), vault_key) if note else b''
             cursor.execute(
-                "INSERT INTO vault (site, username, password, url) VALUES (?, ?, ?, ?)",
-                (encrypted_site, encrypted_user, encrypted_pwd, encrypted_url)
+                "INSERT INTO vault (site, username, password, url, note) VALUES (?, ?, ?, ?, ?)",
+                (encrypted_site, encrypted_user, encrypted_pwd, encrypted_url, encrypted_note)
             )
             conn.commit()
 
             print(Fore.GREEN + "Credentials entered correctly.")
-            logging.info(Fore.GREEN + f"Added new entry for site: {site}, url: {url}")
+            logging.info(f"Added new entry for site: {site}, url: {url}")
             break
 
         except ValueError:
@@ -1103,6 +1178,7 @@ def delete_entry(conn,vault_key: bytes):
                 cursor.execute("DELETE FROM vault WHERE id=?", (idx,))
                 conn.commit()
                 print(Fore.GREEN + "Entry deleted.")
+                logging.info(f"Deleted entry with ID: {idx}")
         except ValueError:
             print(Fore.RED + "Invalid input. Please enter a valid number.")
 
@@ -1158,6 +1234,7 @@ def edit_entry(conn,vault_key: bytes):
             print(f"Editing {decrypted_site}")
             new_user = get_valid_input(f"New username (leave blank to keep '{decrypted_user}'): ", allow_empty=True)
             new_url = get_valid_input(f"New URL (leave blank to keep '{decrypted_url}'): ", allow_empty=True)
+            new_note = get_valid_input(f"New Note (leave blank to keep): ", allow_empty=True)
             print("\n[1] Keep the current password\n[2] Manually enter a new password\n[3] Generate a new password\n[0] Cancel")
             choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
 
@@ -1196,8 +1273,12 @@ def edit_entry(conn,vault_key: bytes):
             if new_pwd:
                 encrypted_pwd = aes_encrypt(new_pwd.encode(), vault_key)
                 cursor.execute("UPDATE vault SET password=? WHERE id=?", (encrypted_pwd, idx))
+            if new_note:
+                encrypted_note = aes_encrypt(new_note.encode(), vault_key)
+                cursor.execute("UPDATE vault SET note=? WHERE id=?", (encrypted_note, idx))
             conn.commit()
             print(Fore.GREEN + "Account updated.")
+            logging.info(f"Edited entry for site: {decrypted_site}, url: {decrypted_url}")
             input("\nPress Enter to return to the menu...")
     except Exception as e:
         print(Fore.RED + f"Unexpected error editing entry: {e}")
@@ -1213,7 +1294,7 @@ def show_entries(conn,vault_key: bytes, copy_enabled=True, justView_enabled=True
     # Load the vault from the file
 
     cursor = conn.cursor()
-    cursor.execute("SELECT id, site, username, password, url FROM vault")
+    cursor.execute("SELECT id, site, username, password, url, note FROM vault")
     rows = cursor.fetchall()
 
     # Check if the vault is empty
@@ -1225,8 +1306,8 @@ def show_entries(conn,vault_key: bytes, copy_enabled=True, justView_enabled=True
     # Print the entries in a formatted way
     show_title()
     print(Fore.MAGENTA + Style.BRIGHT + "\nACCOUNT LIST\n")
-    print(Fore.MAGENTA + "{:<5} {:<20} {:<20} {:<20}".format("ID", "Site", "Username", "Password"))
-    print(Fore.MAGENTA + "-" * 75)
+    print(Fore.MAGENTA + "{:<5} {:<20} {:<20} {:<20} {:<30}".format("ID", "Site", "Username", "Password", "Note"))
+    print(Fore.MAGENTA + "-" * 110)
 
     decrypted_rows = []
     for row in rows:
@@ -1235,13 +1316,15 @@ def show_entries(conn,vault_key: bytes, copy_enabled=True, justView_enabled=True
             decrypted_user = aes_decrypt(row[2], vault_key).decode()
             decrypted_pwd = aes_decrypt(row[3], vault_key).decode()
             decrypted_url = aes_decrypt(row[4], vault_key).decode()
+            decrypted_note = aes_decrypt(row[5], vault_key).decode() if row[5] else ""
         except Exception:
             decrypted_site = "<decryption error>"
             decrypted_user = "<decryption error>"
             decrypted_pwd = "<decryption error>"
             decrypted_url = "<decryption error>"
-        decrypted_rows.append((row[0], decrypted_site, decrypted_user, decrypted_pwd, decrypted_url))
-        print(Fore.WHITE + "{:<5} {:<20} {:<20} {:<20}".format(row[0], decrypted_site, decrypted_user, '*' * len(decrypted_pwd)))
+            decrypted_note = "<decryption error>"
+        decrypted_rows.append((row[0], decrypted_site, decrypted_user, decrypted_pwd, decrypted_url, decrypted_note))
+        print(Fore.WHITE + "{:<5} {:<20} {:<20} {:<20} {:<30}".format(row[0], decrypted_site, decrypted_user, '*' * 10, decrypted_note))
 
     logging.info(f"Viewed entries")
     print("\n")
@@ -1257,7 +1340,7 @@ def show_entries(conn,vault_key: bytes, copy_enabled=True, justView_enabled=True
                 for entry in decrypted_rows:
                     if entry[0] == idx:
                         pyperclip.copy(entry[3])
-                        logging.info(Fore.GREEN + f"Copied password for site: {entry[1]}")
+                        logging.info(f"Copied password for site: {entry[1]}")
                         print(Fore.GREEN + "Password copied to clipboard, it will be erased in 30 seconds for security.")
                         def clear_clipboard():
                             time.sleep(30)
@@ -1682,8 +1765,6 @@ def main():
     # Ensure the secure folder exists
     create_secure_folder()
 
-    # --- DECRYPT THE DATABASE FILE BEFORE ANYTHING ELSE ---
-    # Ask for master password early to get the key
     clear_screen()
     show_title()
     print(Fore.MAGENTA + Style.BRIGHT + "\nWELCOME BACK\n\n")
@@ -1691,29 +1772,56 @@ def main():
     first_run = not (os.path.exists(SALT_FILE) and os.path.exists(FILE_2FA) and os.path.exists(VAULT_FILE) and os.path.getsize(VAULT_FILE) > 0)
 
     if first_run:
-        print(Fore.YELLOW + "First time setup: registration required.")
         init_vault()
-        print(Fore.GREEN + "Registration complete. Please restart the program.")
 
-
-    
     master_pwd = getpass.getpass("Enter the master password: ")
-    decrypted_salt = decrypt_salt_file(master_pwd)
+
+    # Verifica MFA PRIMA di qualsiasi decifratura o fix
+    # Prova a caricare il salt in chiaro solo per la verifica MFA
+    try:
+        with open(SALT_FILE, "rb") as f:
+            encrypted_salt = f.read()
+        # Prova a derivare la chiave per decriptare il salt
+        salt_key = get_salt_encryption_key(master_pwd, encrypted_salt)
+        plain_salt = aes_decrypt(encrypted_salt, salt_key)
+    except Exception:
+        print(Fore.RED + "\n[ERRORE] Impossibile decifrare il file salt: chiave errata o file corrotto.")
+        print(Fore.YELLOW + "Se hai cambiato la master password, o il file salt è stato sovrascritto, non sarà possibile recuperare le password salvate.")
+        exit(1)
+
+    # Verifica MFA
+    if not verify_2fa_code(master_pwd, plain_salt):
+        print(Fore.RED + "\n[ERRORE] MFA fallito. Nessuna modifica effettuata. Riprova.")
+        exit(1)
+
+    # Solo ora procedi con la logica esistente
+    try:
+        decrypted_salt = plain_salt
+    except ValueError:
+        print(Fore.RED + "\n[ERRORE] Decifratura fallita anche dopo l'auto-fix. Se il problema persiste, il file salt è corrotto o la master password è errata.")
+        print(Fore.YELLOW + "Se non hai backup, dovrai re-inizializzare il vault e perderai tutte le password salvate.")
+        exit(1)
+    except Exception as e:
+        print(Fore.RED + f"\n[ERRORE] Errore inatteso: {e}")
+        exit(1)
+
+    # Deriva la chiave del vault
     vault_key = derive_key(master_pwd, decrypted_salt)
-    # Check if the vault file exists and is not empty
+
+    # Decripta il vault se esiste
     decrypted_data = None
     if os.path.exists(VAULT_FILE) and os.path.getsize(VAULT_FILE) > 0:
         decrypted_data = decrypt_db_file(vault_key)
         if decrypted_data is None:
-            print(Fore.RED + "Impossibile aprire il vault per problemi di integrità. Contatta l'amministratore o ripristina un backup.")
+            print(Fore.RED + "Cannot open vault due to integrity issues. Contact administrator or restore from backup.")
             logging.error("Vault integrity error: user notified.")
-            input("\nPremi Invio per uscire...")
+            input("\nPress Enter to exit...")
             exit(1)
 
     # Create the vault in RAM
     conn = sqlite3.connect(":memory:")
     if decrypted_data:
-        # Carica il database decifrato in RAM
+        # Load decrypted database into RAM
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(decrypted_data)
             tmp.flush()
@@ -1725,20 +1833,19 @@ def main():
         disk_conn.close()
         os.remove(tmp_path)
     else:
-        # Se non esiste, crea la tabella
+        # If it doesn't exist, create the table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vault (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 site TEXT NOT NULL,
                 username TEXT NOT NULL,
                 password BLOB NOT NULL,
-                url TEXT
+                url TEXT,
+                note TEXT
             )
         """)
 
     try:
-
-
         # Load the username
         username = "User"
         try:
@@ -1750,107 +1857,70 @@ def main():
         log_key = derive_key(master_pwd + "LOGS", decrypted_salt)
         setup_logging(log_key)
 
-        if not verify_2fa_code(master_pwd, decrypted_salt):
-            print(Fore.RED + "2FA verification failed.")
-            logging.error("2FA verification failed.")
-            exit(1)
-
         log_user_info()
 
-        # Setting up the progress bar
-        steps = [
-            "Deriving the vault key...",
-        ]
-        
-        progress_bar = tqdm(steps, desc="Loading", ascii=True, ncols=75, bar_format="{l_bar}{bar} {n_fmt}/{total_fmt}")
-        
-        # Decrypt the salt file
-        try:
+        clear_screen()
+        show_title()
+        print(Fore.GREEN + f"\nWelcome back, {username}!")
+        print(Fore.GREEN + "Password Manager loaded successfully.")
+        time.sleep(2)
 
-            # Step 1: Derive the vault key
-            progress_bar.set_description(steps[0])
-            vault_key = derive_key(master_pwd, decrypted_salt)
-            progress_bar.update(1)
-
-
-        except ValueError as ve:
-            progress_bar.close()
-            print(Fore.RED + f"Error: {ve}")
-            logging.error(f"Error during loading: {ve}")
-            exit(1)
-        except RuntimeError as re:
-            progress_bar.close()
-            print(Fore.RED + f"Unexpected error: {re}")
-            logging.error(f"Unexpected error during loading: {re}")
-            exit(1)
-        except Exception as e:
-            progress_bar.close()
-            print(Fore.RED + f"Unexpected error: {e}")
-            logging.error(f"Unexpected error during loading: {e}")
-            exit(1)
-
-        progress_bar.close()
-        print(Fore.GREEN + "Loading completed successfully.")
-        time.sleep(1)
-        try:
-            while True:
-                check_and_reset_timer()
-
-                clear_screen()
-                show_title()
-
-                print(Fore.MAGENTA + Style.BRIGHT +"\nMAIN MENU                                Hi "+f"{username}\n")
-                print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE +  " Add an account")
-                print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE +  " Manage accounts")
-                print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE +  " Advanced options")
-                print(Fore.RED + "\n[0] Exit\n")
-                choice = get_valid_input("> ", valid_options=["0", "1", "2", "3"])
-
-                if choice == "1":
-                    add_entry(conn,vault_key)
-                elif choice == "2":
-                    manage_entries(conn,vault_key)
-                elif choice == "3":
-                    advanced_options(log_key,master_pwd,decrypted_salt)
-                elif choice == "0":
-                    logging.info("User logged out.")
-                    break
-        except Exception as e:
-            logging.error(f"Unexpected error in main loop: {e}")
-    finally:
-        logging.info("Session ended.")
-        backup_logs()  # Back up logs at the end of the session
-
-        # Backup the vault
-        try:
+        # Main menu loop
+        while True:
+            check_and_reset_timer()
+            clear_screen()
+            show_title()
+            print(Fore.MAGENTA + Style.BRIGHT + f"\nMAIN MENU                          {username}\n")
+            print(Fore.LIGHTMAGENTA_EX + "[1]" + Fore.WHITE + " Add a new account")
+            print(Fore.LIGHTMAGENTA_EX + "[2]" + Fore.WHITE + " Manage accounts")
+            print(Fore.LIGHTMAGENTA_EX + "[3]" + Fore.WHITE + " Advanced options")
+            print(Fore.RED + "\n[0] Exit\n")
             
+            choice = get_valid_input("> ", valid_options=["0", "1", "2", "3", "4"])
+
+            if choice == "1":
+                add_entry(conn, vault_key)
+            elif choice == "2":
+                manage_entries(conn, vault_key)
+            elif choice == "3":
+                advanced_options(log_key, master_pwd, decrypted_salt)
+            elif choice == "0":
+                print(Fore.YELLOW + "Exiting...")
+                break
+
+    except KeyboardInterrupt:
+        print(Fore.RED + "\nProgram interrupted by user.")
+        logging.info("Program interrupted by user.")
+    except Exception as e:
+        print(Fore.RED + f"Unexpected error: {e}")
+        logging.error(f"Unexpected error in main: {e}")
+    finally:
+        # Save the vault back to disk (encrypted)
+        try:
             conn.commit()
-            conn.execute("SELECT 1")
-        
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                 backup_conn = sqlite3.connect(tmp.name)
                 try:
                     conn.backup(backup_conn)
                 finally:
                     backup_conn.close()
-                tmp.seek(0)
-                plain_data = tmp.read()
-            encrypted = aes_encrypt(plain_data, vault_key)  # Encrypt the vault
+                with open(tmp.name, "rb") as f:
+                    plain_data = f.read()
+            
+            encrypted = aes_encrypt(plain_data, vault_key)
             with open(VAULT_FILE, "wb") as f:
                 f.write(encrypted)
             
-            hmac_value = compute_hmac(encrypted, vault_key)  # Compute the HMAC
+            hmac_value = compute_hmac(encrypted, vault_key)
             save_hmac(hmac_value, HMAC_FILE)
             os.remove(tmp.name)
+            
+            logging.info("Vault saved and encrypted successfully.")
         except Exception as e:
             print(Fore.RED + f"\n[!] Error during vault backup: {e}")
             logging.error(f"Error during vault backup: {e}")
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        
+            conn.close()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
