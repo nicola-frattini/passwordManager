@@ -81,7 +81,7 @@ Every time the vault is saved, an **HMAC-SHA256** of the full encrypted blob is 
 
 **Salt** (16 random bytes): generated once on first run with `os.urandom(16)`, immediately encrypted with the salt key, and stored in `salt.bin`. It is decrypted at login and kept in memory for the duration of the session.
 
-**Pepper**: on first run, the machine's MAC address (`uuid.getnode()`) and hostname are concatenated and SHA-256 hashed to produce a 64-character hex string. This value is saved to `pepper.bin` with owner-only permissions (`chmod 600`) and **read from file on every subsequent run** — it is never regenerated unless the file is missing. This ties the vault cryptographically to the machine it was created on.
+**Pepper**: on first run, the machine's MAC address (`uuid.getnode()`) and hostname are concatenated and SHA-256 hashed to produce a 64-character hex string. This value is saved to `pepper.bin` with owner-only permissions (`chmod 600`) and **read from file on every subsequent run**, it is never regenerated unless the file is missing. This ties the vault cryptographically to the machine it was created on.
 
 ### 2FA (TOTP)
 
@@ -98,7 +98,7 @@ The SQLite database is decrypted into a `sqlite3.connect(":memory:")` connection
 ```
 PasswordManager/
 │
-├── passwordManager.py              # Entry point — login flow, main menu loop, vault save on exit
+├── passwordManager.py              # Entry point - login flow, main menu loop, vault save on exit
 │
 └── src/
     ├── Cryptography/
@@ -137,7 +137,7 @@ PasswordManager/
 ## Requirements
 
 - **Python 3.10+**
-- **Windows** — the data folder uses `%LOCALAPPDATA%` and folder hiding uses the Windows API via `ctypes`. Linux and macOS are not officially supported.
+- **Windows**, the data folder uses `%LOCALAPPDATA%` and folder hiding uses the Windows API via `ctypes`. Linux and macOS are not officially supported.
 
 ### Python Dependencies
 
@@ -298,7 +298,7 @@ Editing a password permanently overwrites the previous value with no recovery op
 **Keyring dependency**
 Derived keys are cached in the OS keyring after first login to avoid re-running Argon2id on every operation. If the keyring becomes inconsistent (e.g. after reinstalling the app or changing the master password externally), `keyringCheck.py` provides an auto-fix routine that clears and regenerates the cached keys.
 
-**Minor bug — HIBP return type**
+**Minor bug,  HIBP return type**
 In `passwordManagement.py`, `check_password_hibp()` returns `{count}` (a Python `set` literal) instead of `int(count)` when a breach is found. The breach detection itself works correctly (a non-empty set is truthy), but the exact breach count is not reported accurately in the log warning.
 
 ---
