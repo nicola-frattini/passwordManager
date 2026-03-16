@@ -6,3 +6,5 @@ keyring==24.2.0           # For securely storing and retrieving keys
 colorama==0.4.1           # For colored terminal output
 tqdm==4.65.0              # For progress bars
 argon2-cffi==21.3.0       # For Argon2 hashing
+qrcode==7.4.2             # For generating QR codes
+pyotp==2.8.0              # For generating TOTP codes
