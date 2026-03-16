@@ -34,7 +34,7 @@ A secure, terminal-based password manager written in Python. Built with strong c
 - **Session timeout**, auto-exits after 5 minutes of inactivity
 - **Password breach check** via the [HaveIBeenPwned API](https://haveibeenpwned.com/API/v3) using the k-anonymity model (only the first 5 characters of the SHA-1 hash are sent)
 - **Secure password generator** using Python's `secrets` module, with configurable length and special characters
-- **Auto-login** — opens the website and types credentials automatically (see limitations)
+- **Auto-login**, opens the website and types credentials automatically (see limitations)
 - **Vault export/import** with paired HMAC file for integrity-preserving backups
 - **Key export** for offline recovery
 - **Encrypted log export**, decrypts and writes logs to a plaintext file on demand
