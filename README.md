@@ -298,9 +298,6 @@ Editing a password permanently overwrites the previous value with no recovery op
 **Keyring dependency**
 Derived keys are cached in the OS keyring after first login to avoid re-running Argon2id on every operation. If the keyring becomes inconsistent (e.g. after reinstalling the app or changing the master password externally), `keyringCheck.py` provides an auto-fix routine that clears and regenerates the cached keys.
 
-**Minor bug,  HIBP return type**
-In `passwordManagement.py`, `check_password_hibp()` returns `{count}` (a Python `set` literal) instead of `int(count)` when a breach is found. The breach detection itself works correctly (a non-empty set is truthy), but the exact breach count is not reported accurately in the log warning.
-
 ---
 
 ## Disclaimer
